@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "screen-beaver": {
+      "type": "stdio",
+      "command": "npm.cmd",
+      "args": [
+        "--prefix",
+        "${workspaceFolder}/mcp",
+        "run",
+        "start"
+      ]
+    }
+  }
+}

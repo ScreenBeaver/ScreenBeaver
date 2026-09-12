@@ -1,0 +1,47 @@
+[package]
+name = "screen-weaver"
+version = "0.1.1"
+description = "Screen Beaver desktop recorder"
+authors = ["Screen Beaver"]
+edition = "2021"
+
+[lib]
+name = "screen_weaver_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+device_query = "2.1"
+parking_lot = "0.12"
+tiny_http = "0.12"
+base64 = "0.22"
+msedge-tts = "0.4"
+open = "5"
+tauri-plugin-deep-link = "2.4.9"
+tauri-plugin-single-instance = { version = "2.4.3", features = ["deep-link"] }
+tauri-plugin-http = "2.5.9"
+
+[target.'cfg(windows)'.dependencies]
+windows-capture = "2.0"
+windows-registry = "0.5"
+windows = { version = "0.58", features = [
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_Graphics_Gdi",
+  "Win32_Foundation",
+  "Win32_System_LibraryLoader",
+] }
+
+# Smaller Store/MSIX payload: LTO + strip, no installer toolchain needed.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

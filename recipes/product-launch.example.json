@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "name": "Product Launch",
+  "preset": "vivid",
+  "frame": {
+    "chrome": "browser",
+    "browserUrl": "example.com",
+    "nativeChromeCrop": 0.11
+  },
+  "captions": [
+    { "start": 0.3, "end": 2.8, "text": "Meet the product" },
+    { "start": 3.0, "end": 5.5, "text": "Here's the core workflow" },
+    { "start": 6.0, "end": 8.5, "text": "Ship faster with less friction" }
+  ],
+  "voiceover": {
+    "enabled": true,
+    "targetLang": "en-US",
+    "voice": "en-US-JennyNeural"
+  },
+  "regenerateAutoZooms": true,
+  "effects": [{ "kind": "hero-zoom", "time": 0.2, "duration": 1.4 }],
+  "export": { "width": 1920, "fps": 30, "quality": "high" },
+  "notes": "Record the product UI in Screen Weaver desktop, then: apply_recipe → export_mp4"
+}

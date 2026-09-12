@@ -1,0 +1,330 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Screen Weaver — dark editor chrome
+ * True charcoal chrome stack: black stage, very dark grey panels,
+ * medium-dark raised controls. Crisp hairlines. Accent blue is
+ * electric but not loud. Timeline clips are saturated & readable.
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-shell: var(--shell);
+  --color-panel: var(--panel);
+  --color-panel-raised: var(--panel-raised);
+  --color-stage: var(--stage);
+  --color-hairline: var(--hairline);
+  --color-rail: var(--rail);
+  --color-track: var(--track);
+  --color-track-foreground: var(--track-foreground);
+  --color-zoom-track: var(--zoom-track);
+  --color-playhead: var(--playhead);
+  --color-record: var(--record);
+  --color-clip-select: var(--clip-select);
+  --color-clip-video: var(--clip-video);
+  --color-clip-video-fg: var(--clip-video-fg);
+  --color-clip-fx: var(--clip-fx);
+  --color-clip-fx-fg: var(--clip-fx-fg);
+  --color-clip-audio: var(--clip-audio);
+  --color-clip-audio-fg: var(--clip-audio-fg);
+  --color-clip-zoom: var(--clip-zoom);
+  --color-clip-zoom-fg: var(--clip-zoom-fg);
+  --color-clip-cam: var(--clip-cam);
+  --color-clip-cam-fg: var(--clip-cam-fg);
+  --color-clip-cap: var(--clip-cap);
+  --color-clip-cap-fg: var(--clip-cap-fg);
+  --color-ember: var(--ember);
+  --color-royal: var(--royal);
+  --color-royal-bright: var(--royal-bright);
+
+  --font-sans: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, monospace;
+}
+
+:root {
+  --radius: 0.2rem;
+
+  /* ── Light (home / studio chrome) ─────────────────────────────────────── */
+  --background:   oklch(0.97 0.005 260);
+  --foreground:   oklch(0.22 0.02 260);
+
+  --stage:        oklch(0.92 0.01 260);
+  --shell:        oklch(0.99 0.002 260);
+  --rail:         oklch(0.985 0.003 260);
+  --panel:        oklch(1 0 0);
+  --panel-raised: oklch(0.96 0.008 260);
+
+  --hairline:     oklch(0.88 0.01 260);
+  --border:       oklch(0.86 0.01 260);
+  --input:        oklch(0.94 0.008 260);
+
+  --card:              oklch(1 0 0);
+  --card-foreground:   oklch(0.22 0.02 260);
+  --popover:           oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0.02 260);
+
+  --royal:        oklch(0.52 0.2 260);
+  --royal-bright: oklch(0.58 0.2 255);
+  --ember:        oklch(0.5 0.19 258);
+  --primary:      oklch(0.5 0.2 258);
+  --primary-foreground: oklch(0.99 0.01 260);
+  --ring:         oklch(0.5 0.2 258);
+
+  --secondary:             oklch(0.94 0.01 260);
+  --secondary-foreground:  oklch(0.28 0.02 260);
+  --muted:                 oklch(0.94 0.01 260);
+  --muted-foreground:      oklch(0.48 0.02 260);
+  --accent:                oklch(0.94 0.015 255);
+  --accent-foreground:     oklch(0.22 0.02 260);
+  --destructive:           oklch(0.55 0.2 24);
+  --destructive-foreground: oklch(0.99 0 0);
+
+  --clip-select:    oklch(0.55 0.18 250);
+  --clip-video:     oklch(0.52 0.2 255);
+  --clip-video-fg:  oklch(0.99 0.01 255);
+  --clip-zoom:      oklch(0.58 0.16 210);
+  --clip-zoom-fg:   oklch(0.12 0.02 210);
+  --clip-cam:       oklch(0.54 0.16 150);
+  --clip-cam-fg:    oklch(0.12 0.02 150);
+  --clip-fx:        oklch(0.52 0.2 302);
+  --clip-fx-fg:     oklch(0.99 0.01 302);
+  --clip-audio:     oklch(0.54 0.18 290);
+  --clip-audio-fg:  oklch(0.99 0.01 290);
+  --clip-cap:       oklch(0.56 0.18 348);
+  --clip-cap-fg:    oklch(0.99 0.01 348);
+
+  --track:            oklch(0.88 0.01 260);
+  --track-foreground: oklch(0.42 0.02 260);
+  --zoom-track:       oklch(0.58 0.16 210);
+  --playhead:         oklch(0.5 0.2 255);
+  --record:           oklch(0.55 0.2 24);
+
+  --chart-1: oklch(0.5 0.2 258);
+  --chart-2: oklch(0.58 0.16 210);
+  --chart-3: oklch(0.54 0.16 150);
+  --chart-4: oklch(0.55 0.2 24);
+  --chart-5: oklch(0.54 0.18 290);
+
+  --sidebar:                  oklch(0.985 0.003 260);
+  --sidebar-foreground:       oklch(0.28 0.02 260);
+  --sidebar-primary:          oklch(0.5 0.2 258);
+  --sidebar-primary-foreground: oklch(0.99 0.01 260);
+  --sidebar-accent:           oklch(0.94 0.015 255);
+  --sidebar-accent-foreground: oklch(0.22 0.02 260);
+  --sidebar-border:           oklch(0.88 0.01 260);
+  --sidebar-ring:             oklch(0.5 0.2 258);
+
+  --lane-bed: oklch(0.94 0.008 260);
+  --shadow-panel:  0 1px 2px oklch(0.4 0.02 260 / 8%);
+  --shadow-window: 0 24px 48px oklch(0.4 0.02 260 / 18%);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background:   oklch(0.10 0 0);
+  --foreground:   oklch(0.93 0 0);
+
+  --stage:        oklch(0.05 0 0);
+  --shell:        oklch(0.115 0 0);
+  --rail:         oklch(0.115 0 0);
+  --panel:        oklch(0.145 0 0);
+  --panel-raised: oklch(0.19 0 0);
+
+  --hairline:     oklch(0.23 0 0);
+  --border:       oklch(0.23 0 0);
+  --input:        oklch(0.2 0 0);
+
+  --card:              oklch(0.145 0 0);
+  --card-foreground:   oklch(0.93 0 0);
+  --popover:           oklch(0.17 0 0);
+  --popover-foreground: oklch(0.93 0 0);
+
+  --royal:        oklch(0.52 0.22 260);
+  --royal-bright: oklch(0.70 0.18 252);
+  --ember:        oklch(0.64 0.18 255);
+  --primary:      oklch(0.60 0.20 258);
+  --primary-foreground: oklch(0.99 0.01 260);
+  --ring:         oklch(0.60 0.20 258);
+
+  --secondary:             oklch(0.20 0 0);
+  --secondary-foreground:  oklch(0.90 0 0);
+  --muted:                 oklch(0.18 0 0);
+  --muted-foreground:      oklch(0.58 0 0);
+  --accent:                oklch(0.20 0 0);
+  --accent-foreground:     oklch(0.94 0 0);
+  --destructive:           oklch(0.58 0.22 24);
+  --destructive-foreground: oklch(0.99 0 0);
+
+  --clip-select:    oklch(0.82 0.14 250);
+  --clip-video:     oklch(0.48 0.22 255);
+  --clip-video-fg:  oklch(0.97 0.02 255);
+  --clip-zoom:      oklch(0.56 0.19 210);
+  --clip-zoom-fg:   oklch(0.10 0.02 210);
+  --clip-cam:       oklch(0.52 0.18 150);
+  --clip-cam-fg:    oklch(0.10 0.02 150);
+  --clip-fx:        oklch(0.50 0.23 302);
+  --clip-fx-fg:     oklch(0.97 0.02 302);
+  --clip-audio:     oklch(0.54 0.20 290);
+  --clip-audio-fg:  oklch(0.97 0.02 290);
+  --clip-cap:       oklch(0.56 0.20 348);
+  --clip-cap-fg:    oklch(0.97 0.02 348);
+
+  --track:            oklch(0.24 0 0);
+  --track-foreground: oklch(0.68 0 0);
+  --zoom-track:       oklch(0.56 0.19 210);
+  --playhead:         oklch(0.80 0.16 252);
+  --record:           oklch(0.58 0.22 24);
+
+  --chart-1: oklch(0.60 0.20 258);
+  --chart-2: oklch(0.56 0.19 210);
+  --chart-3: oklch(0.52 0.18 150);
+  --chart-4: oklch(0.58 0.22 24);
+  --chart-5: oklch(0.54 0.20 290);
+
+  --sidebar:                  oklch(0.115 0 0);
+  --sidebar-foreground:       oklch(0.90 0 0);
+  --sidebar-primary:          oklch(0.60 0.20 258);
+  --sidebar-primary-foreground: oklch(0.99 0.01 260);
+  --sidebar-accent:           oklch(0.18 0 0);
+  --sidebar-accent-foreground: oklch(0.94 0 0);
+  --sidebar-border:           oklch(0.23 0 0);
+  --sidebar-ring:             oklch(0.60 0.20 258);
+
+  --lane-bed: oklch(0.12 0 0);
+  --shadow-panel:  none;
+  --shadow-window: 0 24px 48px oklch(0 0 0 / 70%);
+}
+
+.light { color-scheme: light; }
+
+@layer base {
+  * { border-color: var(--color-border); }
+
+  html, body { height: 100%; }
+
+  body {
+    background-color: var(--color-shell);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow: hidden;
+  }
+
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--color-hairline); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--color-muted-foreground); }
+}
+
+@utility hairline-b { border-bottom: 1px solid var(--color-hairline); }
+@utility hairline-t { border-top:    1px solid var(--color-hairline); }
+@utility hairline-r { border-right:  1px solid var(--color-hairline); }
+@utility hairline-l { border-left:   1px solid var(--color-hairline); }
+
+@utility panel-inset { box-shadow: none; }
+
+@utility stage-checker {
+  background-color: var(--color-stage);
+  background-image: none;
+}
+
+/* Clip selection ring */
+@utility clip-selected {
+  outline: 1.5px solid var(--color-clip-select);
+  outline-offset: 0;
+}
+
+/* Timeline track lane bed */
+@utility lane-bed {
+  background-color: var(--lane-bed);
+  border-top: 1px solid color-mix(in oklab, var(--color-foreground) 6%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--color-foreground) 6%, transparent);
+  contain: layout paint;
+}
+
+/* Clip block edges */
+@utility clip-block {
+  border-left: 2px solid oklch(1 0 0 / 22%);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 10%);
+}
+
+@utility clip-block-on {
+  border-left-color: var(--color-royal-bright);
+}
+
+/* Flat blue CTA gradient */
+@utility bg-royal-grad {
+  background: oklch(0.46 0.22 262);
+  background-image: linear-gradient(
+    180deg,
+    oklch(0.52 0.21 258) 0%,
+    oklch(0.42 0.23 264) 100%
+  );
+  color: oklch(0.99 0.01 260);
+}
+
+/* Instant inspector tab swap */
+.sw-inspector-tab { animation: none; }
+
+/* Tighter tracking for compact labels */
+.nle-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+}
+
+/* Subtle top-highlight bevel on raised surfaces */
+.nle-raised {
+  background-color: var(--color-panel-raised);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 8%);
+}

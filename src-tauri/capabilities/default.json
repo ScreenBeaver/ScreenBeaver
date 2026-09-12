@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "default",
+  "description": "Default Screen Beaver capabilities",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "shell:allow-open",
+    "deep-link:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://screenbeaver.com/*" },
+        { "url": "https://*.screenbeaver.com/*" },
+        { "url": "http://localhost:3000/*" },
+        { "url": "http://127.0.0.1:3000/*" },
+        { "url": "https://*.digitaloceanspaces.com/*" },
+        { "url": "https://*.cdn.digitaloceanspaces.com/*" }
+      ]
+    }
+  ]
+}

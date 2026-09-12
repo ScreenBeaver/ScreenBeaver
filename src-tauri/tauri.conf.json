@@ -1,0 +1,67 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Screen Beaver",
+  "version": "0.1.1",
+  "identifier": "com.screenweaver.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --port 1420 --strictPort",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build && node scripts/prepare-tauri-frontend.mjs",
+    "frontendDist": "../dist/client"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Screen Beaver",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 680,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["yasharka"],
+        "name": "YasharkaProject",
+        "description": "Screen Beaver Project",
+        "mimeType": "application/x-yasharka+json",
+        "role": "Editor"
+      }
+    ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "webviewInstallMode": {
+        "type": "skip"
+      }
+    },
+    "publisher": "Screen Beaver",
+    "shortDescription": "Screen recorder and video editor",
+    "longDescription": "Record your screen or any app, add zooms and captions, then export an MP4."
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["screenbeaver"]
+      }
+    }
+  }
+}

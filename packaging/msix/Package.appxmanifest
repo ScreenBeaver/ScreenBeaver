@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Example Microsoft Store identity. Replace Name / Publisher with your
+  Partner Center values before packaging for the Store.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  IgnorableNamespaces="uap uap10 rescap desktop">
+
+  <Identity
+    Name="YOUR_PACKAGE_IDENTITY_NAME"
+    Publisher="CN=YOUR_PUBLISHER"
+    Version="0.1.1.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Screen Beaver</DisplayName>
+    <PublisherDisplayName>Screen Beaver</PublisherDisplayName>
+    <Description>Record your screen, edit zooms and captions, then export an MP4.</Description>
+    <Logo>Images\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="App"
+      Executable="ScreenWeaver.exe"
+      uap10:TrustLevel="mediumIL"
+      uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements
+        DisplayName="Screen Beaver"
+        Description="Screen recorder and video editor for product demos"
+        BackgroundColor="transparent"
+        Square150x150Logo="Images\Square150x150Logo.png"
+        Square44x44Logo="Images\Square44x44Logo.png">
+        <uap:DefaultTile
+          Wide310x150Logo="Images\Wide310x150Logo.png"
+          Square71x71Logo="Images\Square71x71Logo.png"
+          Square310x310Logo="Images\LargeTile.png"
+          ShortName="Screen Beaver">
+          <uap:ShowNameOnTiles>
+            <uap:ShowOn Tile="square150x150Logo" />
+            <uap:ShowOn Tile="wide310x150Logo" />
+            <uap:ShowOn Tile="square310x310Logo" />
+          </uap:ShowNameOnTiles>
+        </uap:DefaultTile>
+        <uap:SplashScreen Image="Images\SplashScreen.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="yasharkaproject">
+            <uap:DisplayName>Screen Beaver Project</uap:DisplayName>
+            <uap:Logo>Images\Square44x44Logo.png</uap:Logo>
+            <uap:InfoTip>Open with Screen Beaver</uap:InfoTip>
+            <uap:SupportedFileTypes>
+              <uap:FileType ContentType="application/x-yasharka+json">.yasharka</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.protocol">
+          <uap:Protocol Name="screenbeaver">
+            <uap:DisplayName>Screen Beaver</uap:DisplayName>
+            <uap:Logo>Images\Square44x44Logo.png</uap:Logo>
+          </uap:Protocol>
+        </uap:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="microphone" />
+    <DeviceCapability Name="webcam" />
+  </Capabilities>
+</Package>

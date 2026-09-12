@@ -1,0 +1,49 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+.output
+.vinxi
+.tanstack/**
+.nitro
+*.local
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Cached Openverse beds (downloaded by MCP)
+public/sounds/bg/*
+!public/sounds/bg/.gitkeep
+
+# Wrangler / Cloudflare
+.wrangler/
+.dev.vars
+
+# Tauri / Rust
+src-tauri/target
+
+# Staged Store payload (rebuild with npm run desktop:stage-msix)
+packaging/msix/payload/
+*.msix
+*.msixbundle
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

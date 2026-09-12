@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        font: 13px/1.4 system-ui, sans-serif;
+        margin: 0;
+        padding: 12px 14px;
+        width: 260px;
+        color: #f4f4f5;
+        background: #141416;
+      }
+      h1 {
+        font-size: 13px;
+        margin: 0 0 6px;
+      }
+      p {
+        margin: 0;
+        color: #a1a1aa;
+        font-size: 12px;
+      }
+      .ok {
+        margin-top: 10px;
+        font-size: 12px;
+        color: #4ade80;
+      }
+      .bad {
+        margin-top: 10px;
+        font-size: 12px;
+        color: #f87171;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Screen Beaver Companion</h1>
+    <p>
+      Keep the Screen Beaver desktop app open while recording. Shift+Click or Ctrl+Click in any tab
+      adds a zoom; Shift+Space sweeps the camera.
+    </p>
+    <div id="status" class="bad">Checking desktop bridge…</div>
+    <script src="popup.js"></script>
+  </body>
+</html>
