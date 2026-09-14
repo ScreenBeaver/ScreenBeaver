@@ -25,6 +25,21 @@
   <img alt="MCP" src="https://img.shields.io/badge/MCP-agent%20ready-7c5cff?style=flat-square" />
 </p>
 
+<p align="center">
+  <a href="https://apps.microsoft.com/detail/9P89CCNBVMVV">
+    <img
+      src="https://get.microsoft.com/images/en-us%20dark.svg"
+      alt="Get it from Microsoft Store"
+      height="52"
+    />
+  </a>
+</p>
+
+<p align="center">
+  <strong><a href="https://apps.microsoft.com/detail/9P89CCNBVMVV">Download for Windows</a></strong>
+  from the Microsoft Store · or build from source below
+</p>
+
 ---
 
 ## Screenshots
@@ -125,7 +140,15 @@ Full product surface: **[docs/FEATURES.md](./docs/FEATURES.md)**.
 
 ## Quick start
 
-### Prerequisites
+### Install from Microsoft Store (recommended)
+
+The easiest way to run Screen Beaver on Windows 10 / 11:
+
+**[Get it from Microsoft Store →](https://apps.microsoft.com/detail/9P89CCNBVMVV)**
+
+Updates come through the Store. Use the build-from-source steps below if you are developing or contributing.
+
+### Prerequisites (from source)
 
 | Tool | Notes |
 | --- | --- |
@@ -134,7 +157,7 @@ Full product surface: **[docs/FEATURES.md](./docs/FEATURES.md)**.
 | **WebView2** | Windows desktop runtime |
 | **Chrome or Edge** | Recommended for WebCodecs export |
 
-### Install & run (desktop)
+### Build & run from source
 
 ```bash
 git clone https://github.com/ScreenBeaver/ScreenBeaver.git
