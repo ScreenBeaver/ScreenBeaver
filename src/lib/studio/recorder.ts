@@ -1,4 +1,5 @@
 import type {
+  CaretSample,
   CursorIconBitmap,
   CursorSample,
   CursorShape,
@@ -10,6 +11,7 @@ import type {
 import { shapeFromCssCursor } from "./cursorShapes";
 import {
   isTauri,
+  listenNativeCaret,
   listenNativeCursor,
   listenNativeKeystroke,
   listenNativeMarker,
@@ -305,6 +307,7 @@ export async function startRecording(opts: StartOptions): Promise<LiveRecording>
   const hasMicrophone = !!(micStream && micStream.getAudioTracks().length);
 
   const cursor: CursorSample[] = [];
+  const caret: CaretSample[] = [];
   const cursorIcons: Record<string, CursorIconBitmap> = {};
   const markers: RecorderMarker[] = [];
   const sounds: SoundClip[] = [];
@@ -635,6 +638,12 @@ export async function startRecording(opts: StartOptions): Promise<LiveRecording>
         }),
       );
       nativeUnsubs.push(
+        await listenNativeCaret((ev) => {
+          if (timelineOrigin == null) return;
+          caret.push({ t: now(), x: ev.x, y: ev.y });
+        }),
+      );
+      nativeUnsubs.push(
         await listenNativeKeystroke((ev) => {
           pushKeystroke(cueFromNativeKeystroke(now(), ev.label, ev.keys ?? []));
         }),
@@ -736,6 +745,7 @@ export async function startRecording(opts: StartOptions): Promise<LiveRecording>
       if (elapsed > 0.5 && Math.abs(duration - elapsed) > 0.4) {
         const scale = duration / elapsed;
         for (const s of cursor) s.t *= scale;
+        for (const c of caret) c.t *= scale;
         for (const m of markers) m.t *= scale;
         for (const s of sounds) s.time *= scale;
         for (const k of keystrokeCues) k.time *= scale;
@@ -749,6 +759,7 @@ export async function startRecording(opts: StartOptions): Promise<LiveRecording>
         width: meta.w || 1920,
         height: meta.h || 1080,
         cursor,
+        caret: caret.length ? caret : undefined,
         cursorIcons: Object.keys(cursorIcons).length ? cursorIcons : undefined,
         createdAt: Date.now(),
         sourceLabel,

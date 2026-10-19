@@ -9,8 +9,10 @@ import {
   listenAgentCommand,
   listenNativeCaptureStarted,
   listenNativeCaptureStopped,
+  listenNativeCaret,
   listenNativeCursor,
   listenNativeKeystroke,
+  listenNativeSound,
   reportAgentResult,
   type AgentCommandEvent,
 } from "@/lib/studio/nativeBridge";
@@ -47,18 +49,41 @@ import { matchDeviceFrame } from "@/lib/studio/deviceFrames";
 import { resolveBackgroundImageUrl } from "@/lib/studio/wallpapers";
 import { focusStudioWindow } from "@/lib/studio/nativeBridge";
 import { emitAgentUi, sleep as uiSleep } from "@/lib/studio/agentUi";
-import type { CameraMoveKind, CursorSample, KeystrokeCue, SceneEffectKind, SoundKind } from "@/lib/studio/types";
+import type { CameraMoveKind, CaretSample, CursorSample, KeystrokeCue, SceneEffectKind, SoundKind } from "@/lib/studio/types";
 import { generateVoiceoverFromCaptions } from "@/lib/studio/voiceoverGenerate";
 import { translateCaptionCues } from "@/lib/studio/translate";
 import { DEFAULT_PROJECT } from "@/lib/studio/store";
 import { cueFromNativeKeystroke, mergeKeystrokeCues } from "@/lib/studio/keystrokes";
+import { makeCursorTrack, renderScene, stageAspect } from "@/lib/studio/compositor";
+
+function seekVideo(video: HTMLVideoElement, time: number): Promise<void> {
+  return new Promise((resolve) => {
+    const target = Math.min(Math.max(0, time), Math.max(0, (video.duration || time) - 0.05));
+    if (Math.abs(video.currentTime - target) < 0.04 && video.readyState >= 2) {
+      resolve();
+      return;
+    }
+    const done = () => {
+      video.removeEventListener("seeked", done);
+      resolve();
+    };
+    video.addEventListener("seeked", done, { once: true });
+    try {
+      video.currentTime = target;
+    } catch {
+      resolve();
+    }
+    window.setTimeout(done, 700);
+  });
+}
+
 import { enqueueMcpEvent } from "@/lib/account/client";
 import { useAccount } from "@/lib/account/AccountProvider";
 import { logHomeActivity, logMcpActivity } from "@/lib/studio/homeActivity";
 
 type Activity = { label: string; at: number };
 
-/** Cursor samples collected while a native capture is running. */
+/** Cursor / typing samples collected while a native capture is running. */
 const nativeCursorBuf: {
   active: boolean;
   startMs: number;
@@ -66,6 +91,11 @@ const nativeCursorBuf: {
   lastEnded: CursorSample[];
   keystrokes: KeystrokeCue[];
   lastKeystrokes: KeystrokeCue[];
+  /** Raw typing tick times (from native-sound) — coalesced on import for Auto zooms. */
+  typingTicks: number[];
+  lastTyping: { t: number; duration: number }[];
+  caret: CaretSample[];
+  lastCaret: CaretSample[];
 } = {
   active: false,
   startMs: 0,
@@ -73,24 +103,64 @@ const nativeCursorBuf: {
   lastEnded: [],
   keystrokes: [],
   lastKeystrokes: [],
+  typingTicks: [],
+  lastTyping: [],
+  caret: [],
+  lastCaret: [],
 };
+
+function coalesceTypingTicks(ticks: number[]): { t: number; duration: number }[] {
+  if (!ticks.length) return [];
+  const sorted = [...ticks].sort((a, b) => a - b);
+  const out: { t: number; duration: number }[] = [];
+  let start = sorted[0]!;
+  let end = start + 0.35;
+  for (let i = 1; i < sorted.length; i++) {
+    const t = sorted[i]!;
+    if (t <= end + 0.55) {
+      end = Math.max(end, t + 0.35);
+    } else {
+      out.push({ t: start, duration: Math.max(0.45, end - start) });
+      start = t;
+      end = t + 0.35;
+    }
+  }
+  out.push({ t: start, duration: Math.max(0.45, end - start) });
+  return out;
+}
+
+/**
+ * When agent `stop_capture` owns import, ignore the parallel `native-capture-stopped`
+ * event import — a second import after apply_recipe was wiping Auto zooms.
+ */
+let suppressNativeStoppedImport = 0;
 
 function beginCursorBuffer() {
   nativeCursorBuf.active = true;
   nativeCursorBuf.startMs = performance.now();
   nativeCursorBuf.samples = [];
   nativeCursorBuf.keystrokes = [];
+  nativeCursorBuf.typingTicks = [];
+  nativeCursorBuf.caret = [];
+  nativeCursorBuf.lastCaret = [];
 }
 
-function endCursorBuffer(): { cursor: CursorSample[]; keystrokes: KeystrokeCue[] } {
+function endCursorBuffer(): {
+  cursor: CursorSample[];
+  keystrokes: KeystrokeCue[];
+  typing: { t: number; duration: number }[];
+} {
   if (nativeCursorBuf.active) {
     nativeCursorBuf.active = false;
     nativeCursorBuf.lastEnded = [...nativeCursorBuf.samples];
     nativeCursorBuf.lastKeystrokes = [...nativeCursorBuf.keystrokes];
+    nativeCursorBuf.lastTyping = coalesceTypingTicks(nativeCursorBuf.typingTicks);
+    nativeCursorBuf.lastCaret = [...nativeCursorBuf.caret];
   }
   return {
     cursor: [...nativeCursorBuf.lastEnded],
     keystrokes: [...nativeCursorBuf.lastKeystrokes],
+    typing: [...nativeCursorBuf.lastTyping],
   };
 }
 
@@ -112,7 +182,7 @@ function applyImportedTake(
   studio: ReturnType<typeof useStudio>,
   take: Awaited<ReturnType<typeof importNativeTake>>,
   keystrokes?: KeystrokeCue[],
-  opts?: { typing?: { t: number; duration: number }[] },
+  opts?: { typing?: { t: number; duration: number }[]; agentDriven?: boolean },
 ) {
   const isAndroid = (take.sourceLabel || "").toLowerCase().includes("android");
   const deviceMatch = isAndroid ? matchDeviceFrame(take.sourceLabel || "") : null;
@@ -121,6 +191,10 @@ function applyImportedTake(
       ? ("9:16" as const)
       : ("16:9" as const)
     : studio.project.frame.ratio;
+
+  if (!take.caret?.length && nativeCursorBuf.lastCaret.length) {
+    take = { ...take, caret: [...nativeCursorBuf.lastCaret] };
+  }
 
   let sounds = studio.project.sounds ?? [];
   if (opts?.typing?.length) {
@@ -163,7 +237,17 @@ function applyImportedTake(
             size: 100,
           },
         }
-      : {}),
+      : opts?.agentDriven
+        ? {
+            // The AI pauses between steps with the pointer perfectly still — idle
+            // auto-hide would make the cursor blink out between every action.
+            cursor: {
+              ...(studio.project.cursor ?? DEFAULT_PROJECT.cursor),
+              visible: true,
+              autoHideIdle: false,
+            },
+          }
+        : {}),
   });
   studio.clock.setPlaying(false);
   studio.clock.set(0);
@@ -174,9 +258,15 @@ async function importStoppedPayload(
   payload: NativeCaptureStopPayload,
   cursor: CursorSample[],
   keystrokes?: KeystrokeCue[],
+  typingFromBuf?: { t: number; duration: number }[],
 ) {
   const take = await importNativeTake(payload, cursor);
-  applyImportedTake(studio, take, keystrokes, { typing: payload.typing });
+  // Desktop-recorded typing shares the video clock; the UI buffer is only a fallback.
+  const typing = payload.typing?.length ? payload.typing : (typingFromBuf ?? []);
+  applyImportedTake(studio, take, keystrokes, {
+    typing: typing.length ? typing : undefined,
+    agentDriven: payload.agentDriven,
+  });
   return take;
 }
 
@@ -276,6 +366,26 @@ export function AgentHost() {
       else unsubs.push(u);
     });
 
+    // Agent demos emit typing SFX via /input/run — must land on the take for Auto zooms.
+    void listenNativeSound((ev) => {
+      if (!nativeCursorBuf.active) return;
+      if (ev.kind !== "typing") return;
+      const t = (performance.now() - nativeCursorBuf.startMs) / 1000;
+      nativeCursorBuf.typingTicks.push(t);
+    }).then((u) => {
+      if (dead) u();
+      else unsubs.push(u);
+    });
+
+    void listenNativeCaret((ev) => {
+      if (!nativeCursorBuf.active) return;
+      const t = (performance.now() - nativeCursorBuf.startMs) / 1000;
+      nativeCursorBuf.caret.push({ t, x: ev.x, y: ev.y });
+    }).then((u) => {
+      if (dead) u();
+      else unsubs.push(u);
+    });
+
     void listenNativeCaptureStarted(() => {
       beginCursorBuffer();
       emitAgentUi({ type: "native-recording", active: true });
@@ -288,13 +398,28 @@ export function AgentHost() {
     void listenNativeCaptureStopped((ev) => {
       void (async () => {
         try {
+          // Always clear the recording flag — even when import is suppressed.
+          // Otherwise status keeps nativeRecording:true after Rust /capture/stop.
           emitAgentUi({ type: "native-recording", active: false });
-          const { cursor, keystrokes } = endCursorBuffer();
+          if ((ev as NativeCaptureStopPayload).finalizing) {
+            // import_last_capture runs once the encoder finishes; keep the key/typing buffer for it.
+            toast.message("Finishing video…", {
+              description: "Large recording — the studio imports it as soon as it's written.",
+            });
+            return;
+          }
+          if (suppressNativeStoppedImport > 0) {
+            endCursorBuffer();
+            // Agent stop_capture imports the take (keeps cursor track for Auto zooms).
+            return;
+          }
+          const { cursor, keystrokes, typing } = endCursorBuffer();
           const take = await importStoppedPayload(
             studioRef.current,
             ev as NativeCaptureStopPayload,
             cursor,
             keystrokes,
+            typing,
           );
           toast.success(
             `Recording imported · ${take.duration.toFixed(1)}s` +
@@ -339,23 +464,45 @@ async function runAgentAction(
   studio: ReturnType<typeof useStudio>,
 ): Promise<Record<string, unknown>> {
   switch (action) {
-    case "status": {
+    case "status":
+    case "verify_take": {
       const { project, take } = studio;
+      const autoZooms = project.zooms.filter((z) => z.auto).length;
+      const cursorSamples = take?.cursor?.length ?? 0;
+      const captions = project.captions?.cues ?? [];
+      const wallpaperId = project.background?.wallpaperId ?? null;
       return {
         ok: true,
         hasTake: !!take,
         duration: take?.duration ?? 0,
         name: project.name,
-        captions: project.captions?.cues?.length ?? 0,
+        captions: captions.length,
+        captionTexts: captions.slice(0, 6).map((c) => c.text),
         zooms: project.zooms.length,
+        autoZooms,
+        cursorSamples,
+        zoomMode: project.zoom.mode ?? "auto",
         effects: project.effects?.length ?? 0,
         sounds: project.sounds?.length ?? 0,
         voiceoverClips: project.voiceover?.clips?.length ?? 0,
+        backgroundMusic: !!(project.music?.enabled && project.music?.url),
+        look: {
+          padding: project.frame?.padding,
+          radius: project.frame?.radius,
+          chrome: project.frame?.chrome,
+          wallpaperId,
+          backgroundMode: project.background?.mode,
+          zoomAutoScale: project.zoom?.autoScale,
+        },
         time: studio.clock.time,
         nativeRecording: nativeCursorBuf.active,
         exportSupported: exportSupported(),
         presets: Object.keys(STYLE_PRESETS),
-        note: "User should click Export in the app when the build looks right. Do not auto-export unless asked.",
+        verified: !!take && cursorSamples >= 2,
+        summaryLine: take
+          ? `Take ${take.duration.toFixed(1)}s · ${captions.length} captions · Auto zooms ×${autoZooms} · pad ${project.frame?.padding ?? "?"} · cursor ${cursorSamples}`
+          : "No take loaded — open studio and record first",
+        note: "Call peek_studio to SEE the stage. Tell the user to click Export. Do not auto-export unless asked.",
       };
     }
     case "list_windows":
@@ -377,7 +524,10 @@ async function runAgentAction(
     }
     case "focus_studio": {
       await focusStudioWindow();
-      return { ok: true, message: "Screen Beaver brought to front" };
+      // Leave the home page so the studio chrome is ready for capture / peek.
+      emitAgentUi({ type: "open-picker", surface: "application" });
+      emitAgentUi({ type: "close-picker" });
+      return { ok: true, message: "Screen Beaver studio ready" };
     }
     case "open_record_picker": {
       await focusStudioWindow();
@@ -404,48 +554,76 @@ async function runAgentAction(
         await uiSleep(750);
       }
       emitAgentUi({ type: "close-picker" });
+      beginCursorBuffer();
       emitAgentUi({ type: "native-recording", active: true });
-      const started = await startNativeCapture({
-        windowId: p.windowId,
-        titleContains: p.titleContains,
-      });
-      return {
-        ok: true,
-        message: "Recording started (application window, native — no OS Share dialog)",
-        started,
-      };
-    }
-    case "stop_capture": {
-      const phone = await androidSessionActive().catch(() => false);
-      const stopped = phone ? await androidStop() : await stopNativeCapture();
-      emitAgentUi({ type: "native-recording", active: false });
-      const { cursor, keystrokes } = endCursorBuffer();
       try {
-        const mergedCursor =
-          stopped.cursor && stopped.cursor.length >= 2 ? stopped.cursor : cursor;
-        const take = await importStoppedPayload(studio, stopped, mergedCursor, keystrokes);
-        await focusStudioWindow();
+        const started = await startNativeCapture({
+          windowId: p.windowId,
+          titleContains: p.titleContains,
+        });
         return {
           ok: true,
-          message: phone
-            ? `Android capture imported · ${take.duration.toFixed(1)}s`
-            : `Capture imported · ${take.duration.toFixed(1)}s`,
-          durationMs: stopped.durationMs,
-          width: stopped.width,
-          height: stopped.height,
-          sourceLabel: stopped.sourceLabel,
-          path: stopped.path,
-          mediaUrl: stopped.mediaUrl,
-          hasTake: true,
-          android: phone,
+          message: "Recording started (application window, native — no OS Share dialog)",
+          started,
+          sourceLabel:
+            started && typeof started === "object" && "sourceLabel" in started
+              ? (started as { sourceLabel?: string }).sourceLabel
+              : undefined,
         };
       } catch (err) {
+        endCursorBuffer();
+        emitAgentUi({ type: "native-recording", active: false });
         return {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
-          path: stopped.path,
-          mediaUrl: stopped.mediaUrl,
         };
+      }
+    }
+    case "stop_capture": {
+      const phone = await androidSessionActive().catch(() => false);
+      suppressNativeStoppedImport += 1;
+      try {
+        const stopped = phone ? await androidStop() : await stopNativeCapture();
+        emitAgentUi({ type: "native-recording", active: false });
+        const { cursor, keystrokes, typing } = endCursorBuffer();
+        try {
+          const mergedCursor =
+            stopped.cursor && stopped.cursor.length >= 2 ? stopped.cursor : cursor;
+          const take = await importStoppedPayload(
+            studio,
+            stopped,
+            mergedCursor,
+            keystrokes,
+            typing,
+          );
+          await focusStudioWindow();
+          return {
+            ok: true,
+            message: phone
+              ? `Android capture imported · ${take.duration.toFixed(1)}s`
+              : `Capture imported · ${take.duration.toFixed(1)}s`,
+            durationMs: stopped.durationMs,
+            width: stopped.width,
+            height: stopped.height,
+            sourceLabel: stopped.sourceLabel,
+            path: stopped.path,
+            mediaUrl: stopped.mediaUrl,
+            hasTake: true,
+            android: phone,
+            cursorSamples: take.cursor?.length ?? 0,
+          };
+        } catch (err) {
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+            path: stopped.path,
+            mediaUrl: stopped.mediaUrl,
+          };
+        }
+      } finally {
+        window.setTimeout(() => {
+          suppressNativeStoppedImport = Math.max(0, suppressNativeStoppedImport - 1);
+        }, 800);
       }
     }
     case "android_ensure_runtime": {
@@ -488,11 +666,17 @@ async function runAgentAction(
     case "android_stop": {
       const stopped = await androidStop();
       emitAgentUi({ type: "native-recording", active: false });
-      const { cursor, keystrokes } = endCursorBuffer();
+      const { cursor, keystrokes, typing } = endCursorBuffer();
       try {
         const mergedCursor =
           stopped.cursor && stopped.cursor.length >= 2 ? stopped.cursor : cursor;
-        const take = await importStoppedPayload(studio, stopped, mergedCursor, keystrokes);
+        const take = await importStoppedPayload(
+          studio,
+          stopped,
+          mergedCursor,
+          keystrokes,
+          typing,
+        );
         await focusStudioWindow();
         return {
           ok: true,
@@ -516,14 +700,31 @@ async function runAgentAction(
       }
     }
     case "import_last_capture": {
-      const { cursor, keystrokes } = endCursorBuffer();
-      const take = await importLastNativeCapture(cursor);
-      applyImportedTake(studio, take, keystrokes);
+      const { cursor, keystrokes, typing } = endCursorBuffer();
+      const { take, meta } = await importLastNativeCapture(cursor);
+      applyImportedTake(studio, take, keystrokes, {
+        typing: meta.typing?.length ? meta.typing : typing,
+        agentDriven: meta.agentDriven,
+      });
+      // Rebuild Auto zooms from cursor track (sidecar survives stop timeouts).
+      let autoZooms = 0;
+      try {
+        const stats = studio.regenerateAutoZooms();
+        autoZooms = stats.autoZooms;
+      } catch {
+        /* take may lack cursor */
+      }
       return {
         ok: true,
-        message: `Imported last capture · ${take.duration.toFixed(1)}s`,
+        message: `Imported last capture · ${take.duration.toFixed(1)}s · Auto zooms ×${autoZooms}`,
         hasTake: true,
         duration: take.duration,
+        autoZooms,
+        cursorSamples: take.cursor?.length ?? 0,
+        clicks: take.cursor.filter((c, i, a) => c.down && !a[i - 1]?.down).length,
+        typingBursts: (meta.typing?.length ? meta.typing : typing).length,
+        caretSamples: take.caret?.length ?? 0,
+        agentDriven: Boolean(meta.agentDriven),
       };
     }
     case "notify": {
@@ -537,6 +738,88 @@ async function runAgentAction(
       studio.clock.setPlaying(false);
       studio.clock.set(time);
       return { ok: true, message: `Playhead → ${time.toFixed(1)}s`, time };
+    }
+    case "peek_stage": {
+      // Render real composed video frames so the agent can SEE the take (zooms/cells/padding).
+      const take = studio.take;
+      if (!take) return { ok: false, error: "No take loaded" };
+      const screen = studio.screenRef.current;
+      if (!screen || !screen.src) {
+        return { ok: false, error: "Stage video not ready — wait for the take to load" };
+      }
+      studio.clock.setPlaying(false);
+      const dur = Math.max(0.5, take.duration);
+      const zooms = studio.project.zooms ?? [];
+      const captions = studio.project.captions?.cues ?? [];
+      const sampleTimes = new Set<number>();
+      sampleTimes.add(Math.min(1.2, dur * 0.08));
+      sampleTimes.add(dur * 0.5);
+      sampleTimes.add(Math.max(0, dur - 1.2));
+      for (const z of zooms.slice(0, 5)) {
+        sampleTimes.add(Math.min(dur - 0.05, z.time + z.duration * 0.45));
+      }
+      for (const c of captions.slice(0, 3)) {
+        sampleTimes.add(Math.min(dur - 0.05, (c.start + c.end) / 2));
+      }
+      const times = [...sampleTimes]
+        .filter((t) => t >= 0 && t <= dur)
+        .sort((a, b) => a - b)
+        .slice(0, 6);
+
+      const aspect = stageAspect(studio.project, take);
+      const W = 960;
+      const H = Math.max(240, Math.round(W / aspect));
+      const cursorTrack = makeCursorTrack(
+        take,
+        studio.project.cursor?.smoothing ?? 55,
+        studio.project.cursor?.autoHideIdle ?? true,
+      );
+      const bgUrl = resolveBackgroundImageUrl(studio.project.background);
+      const backgroundImage = bgUrl ? await loadImage(bgUrl) : null;
+
+      const frames: { t: number; pngBase64: string }[] = [];
+      for (const t of times) {
+        studio.clock.set(t);
+        await seekVideo(screen, t);
+        await uiSleep(60);
+        const canvas = document.createElement("canvas");
+        canvas.width = W;
+        canvas.height = H;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        renderScene(ctx, W, H, {
+          project: studio.project,
+          take,
+          time: t,
+          cursorTrack,
+          media: {
+            screen,
+            camera: null,
+            cameraMask: null,
+            backgroundImage,
+            cameraBackgroundImage: null,
+          },
+        });
+        const dataUrl = canvas.toDataURL("image/png");
+        const pngBase64 = dataUrl.includes(",") ? dataUrl.split(",")[1]! : dataUrl;
+        if (pngBase64.length > 80) frames.push({ t: Math.round(t * 10) / 10, pngBase64 });
+      }
+
+      if (!frames.length) {
+        return { ok: false, error: "Could not render stage frames — video may still be decoding" };
+      }
+      return {
+        ok: true,
+        message: `Stage frames ×${frames.length} (composed video + zooms)`,
+        frameCount: frames.length,
+        times: frames.map((f) => f.t),
+        frames: frames.map((f) => ({ t: f.t, pngBase64: f.pngBase64 })),
+        look: {
+          padding: studio.project.frame?.padding,
+          radius: studio.project.frame?.radius,
+          autoZooms: zooms.filter((z) => z.auto).length,
+        },
+      };
     }
     case "open_tab": {
       const tab = (payload as { tab?: InspectorTab })?.tab;
@@ -564,15 +847,126 @@ async function runAgentAction(
       if (!preset || !STYLE_PRESETS[preset]) {
         return { ok: false, error: "payload.preset must be clean|day|vivid|night|tight" };
       }
-      studio.setProject(applyPreset(studio.project, preset));
+      const styled = applyPreset(studio.project, preset);
+      // Always land on readable pad/radius after preset (honest %).
+      studio.setProject({
+        ...styled,
+        frame: { ...styled.frame, padding: 10, radius: 4 },
+      });
       studio.setInspector("background");
-      return { ok: true, message: `Look · ${STYLE_PRESETS[preset].label}` };
+      return {
+        ok: true,
+        message: `Look · ${STYLE_PRESETS[preset].label} · pad 10% · radius 4%`,
+        padding: 10,
+        radius: 4,
+      };
     }
     case "patch_frame": {
       const patch = (payload as { frame?: Record<string, unknown> })?.frame ?? payload;
       if (!patch || typeof patch !== "object") return { ok: false, error: "frame patch required" };
-      studio.patchFrame(patch as Parameters<typeof studio.patchFrame>[0]);
-      return { ok: true, message: "Updated window frame" };
+      const next = { ...(patch as Record<string, unknown>) };
+      if (next.padding == null) next.padding = 10;
+      if (next.radius == null) next.radius = 4;
+      studio.patchFrame(next as Parameters<typeof studio.patchFrame>[0]);
+      return {
+        ok: true,
+        message: `Frame · pad ${Number(next.padding)}% · radius ${Number(next.radius)}%`,
+        padding: next.padding,
+        radius: next.radius,
+      };
+    }
+    case "patch_trim": {
+      const p = payload as { start?: number; end?: number; trimEndSlackSec?: number };
+      const takeDur = studio.take?.duration ?? studio.project.trim.end;
+      let start =
+        p.start != null && Number.isFinite(Number(p.start))
+          ? Math.max(0, Number(p.start))
+          : studio.project.trim.start;
+      let end =
+        p.end != null && Number.isFinite(Number(p.end))
+          ? Math.max(0, Number(p.end))
+          : studio.project.trim.end;
+      // Convenience: cut trailing dead air — trimEndSlackSec = seconds to keep after last activity.
+      if (p.trimEndSlackSec != null && Number.isFinite(Number(p.trimEndSlackSec))) {
+        const slack = Math.max(0, Number(p.trimEndSlackSec));
+        const lastClick =
+          studio.take?.cursor?.reduce((m, s) => {
+            if (s.down) return Math.max(m, s.t);
+            return m;
+          }, 0) ?? 0;
+        const lastSound = (studio.project.sounds ?? []).reduce(
+          (m, s) => Math.max(m, s.time + (s.duration || 0)),
+          0,
+        );
+        const lastCap = studio.project.captions.cues.reduce((m, c) => Math.max(m, c.end), 0);
+        const activityEnd = Math.max(lastClick, lastSound, lastCap, 0.5);
+        const cut = Math.min(takeDur, Math.max(start + 0.8, activityEnd + slack));
+        // If caller also passed end, use the tighter of the two.
+        end = p.end != null && Number.isFinite(Number(p.end)) ? Math.min(end, cut) : cut;
+      }
+      if (end <= start + 0.4) {
+        return { ok: false, error: "trim end must be > start + 0.4s" };
+      }
+      end = Math.min(takeDur || end, end);
+      studio.patchTrim({ start, end });
+      studio.clock.setPlaying(false);
+      studio.clock.set(start);
+      return {
+        ok: true,
+        message: `Trim · ${start.toFixed(2)}s → ${end.toFixed(2)}s`,
+        start,
+        end,
+        takeDuration: takeDur,
+      };
+    }
+    case "clear_auto_zooms": {
+      const manuals = studio.project.zooms.filter((z) => !z.auto);
+      for (const z of studio.project.zooms.filter((z) => z.auto)) {
+        studio.removeZoom(z.id);
+      }
+      studio.patchZoom({ mode: "manual", enabled: true });
+      return { ok: true, message: `Cleared auto zooms · ${manuals.length} manual left`, zooms: manuals.length };
+    }
+    case "remove_zoom": {
+      const id = String((payload as { id?: string })?.id || "").trim();
+      if (!id) return { ok: false, error: "id required" };
+      studio.removeZoom(id);
+      return { ok: true, message: `Removed zoom ${id}` };
+    }
+    case "update_zoom": {
+      const p = payload as {
+        id?: string;
+        time?: number;
+        duration?: number;
+        scale?: number;
+        x?: number;
+        y?: number;
+        followCursor?: boolean;
+      };
+      const id = String(p.id || "").trim();
+      if (!id) return { ok: false, error: "id required" };
+      const patch: Partial<{
+        time: number;
+        duration: number;
+        scale: number;
+        x: number;
+        y: number;
+        followCursor: boolean;
+      }> = {};
+      if (p.time != null) patch.time = Math.max(0, Number(p.time));
+      if (p.duration != null) patch.duration = Math.max(0.4, Number(p.duration));
+      if (p.scale != null) patch.scale = Math.min(3.5, Math.max(1.15, Number(p.scale)));
+      if (p.x != null) patch.x = clamp01(Number(p.x));
+      if (p.y != null) patch.y = clamp01(Number(p.y));
+      if (p.followCursor != null) patch.followCursor = !!p.followCursor;
+      studio.updateZoom(id, patch);
+      studio.setSelectedZoom(id);
+      studio.setInspector("zoom");
+      if (typeof patch.time === "number") {
+        studio.clock.setPlaying(false);
+        studio.clock.set(patch.time);
+      }
+      return { ok: true, message: `Updated zoom ${id}`, id, ...patch };
     }
     case "set_name": {
       const name = String((payload as { name?: string })?.name || "").trim();
@@ -586,12 +980,23 @@ async function runAgentAction(
       if (!checked.ok) return { ok: false, error: checked.error };
       const next = applyRecipe(studio.project, checked.recipe);
       studio.setProject(next);
-      if (checked.recipe.regenerateAutoZooms) studio.regenerateAutoZooms();
+      let zoomStats: { autoZooms: number; cursorSamples: number; zoomMode: string } = {
+        autoZooms: 0,
+        cursorSamples: 0,
+        zoomMode: next.zoom.mode ?? "auto",
+      };
+      if (checked.recipe.regenerateAutoZooms) {
+        // Same path as human Auto mode — punches from cursor clicks + typing on the take.
+        zoomStats = studio.regenerateAutoZooms();
+      }
       return {
         ok: true,
         message: `Applied recipe${checked.recipe.name ? ` “${checked.recipe.name}”` : ""}`,
         captions: next.captions.cues.length,
-        zooms: next.zooms.length,
+        zooms: next.zooms.length + zoomStats.autoZooms,
+        autoZooms: zoomStats.autoZooms,
+        cursorSamples: zoomStats.cursorSamples,
+        zoomMode: zoomStats.zoomMode,
       };
     }
     case "add_caption": {
@@ -713,10 +1118,34 @@ async function runAgentAction(
       };
     }
     case "regenerate_zooms": {
-      if (!studio.take) return { ok: false, error: "No recording loaded" };
-      studio.regenerateAutoZooms();
+      studio.patchZoom({ enabled: true, mode: "auto" });
+      const stats = studio.regenerateAutoZooms();
+      const clicks = studio.take?.cursor?.filter((s, i, arr) => {
+        if (!s.down) return false;
+        const prev = arr[i - 1];
+        return !prev || !prev.down;
+      }).length ?? 0;
+      const typingSounds = (studio.project.sounds ?? []).filter((s) => s.kind === "typing").length;
+      if (stats.cursorSamples < 2) {
+        return {
+          ok: false,
+          error: "No cursor track on the take — Auto zooms need recorded clicks/moves",
+          ...stats,
+          clicks,
+          typingSounds,
+        };
+      }
       studio.setInspector("zoom");
-      return { ok: true, message: "Auto-zooms from your cursor clicks" };
+      return {
+        ok: true,
+        message:
+          stats.autoZooms > 0
+            ? `Auto-zooms · ${stats.autoZooms} punches (${stats.cursorSamples} samples, ${clicks} clicks, ${typingSounds} typing)`
+            : `Auto-zooms empty — ${stats.cursorSamples} samples but ${clicks} clicks / ${typingSounds} typing clips. Re-record with click-per-cell.`,
+        ...stats,
+        clicks,
+        typingSounds,
+      };
     }
     case "translate_captions": {
       const p = payload as { speakLang?: string; targetLang?: string };
@@ -897,9 +1326,9 @@ async function runAgentAction(
       return {
         ok: false,
         error:
-          `Unknown action "${action}". Use status|list_windows|focus_studio|open_record_picker|open_url|open_path|start_capture|stop_capture|` +
+          `Unknown action "${action}". Use status|list_windows|focus_studio|peek_stage|open_record_picker|open_url|open_path|start_capture|stop_capture|` +
           `android_ensure_runtime|android_list_devices|android_start|android_stop|` +
-          `notify|seek|open_tab|apply_preset|patch_frame|set_name|apply_recipe|add_caption|add_zoom|` +
+          `notify|seek|open_tab|apply_preset|patch_frame|patch_trim|clear_auto_zooms|remove_zoom|update_zoom|set_name|apply_recipe|add_caption|add_zoom|` +
           `add_effect|add_sound|add_camera_move|set_captions|regenerate_zooms|translate_captions|generate_voiceover|set_background_music|clear_background_music|ready_for_export|export`,
       };
   }

@@ -1,4 +1,5 @@
 import type {
+  CaretSample,
   CameraMove,
   CameraMoveKind,
   CameraPosition,
@@ -248,6 +249,8 @@ export interface ZoomEvalOptions {
   stageAspect?: number;
   /** Capture content aspect before letterboxing. */
   contentAspect?: number;
+  /** Cursor track lookup — enables the lazy (trailing) follow camera. */
+  cursorAt?: (t: number) => CursorFrame;
 }
 
 /**
@@ -262,31 +265,60 @@ export function evalZoom(
 ): ZoomState {
   if (opts.enabled === false) return { scale: 1, x: 0.5, y: 0.5, weight: 0 };
 
-  let best: ZoomState = { scale: 1, x: 0.5, y: 0.5, weight: 0 };
+  // Overlapping zooms crossfade: the camera pans between targets while staying zoomed
+  // instead of pulling out and punching back in.
+  let sumW = 0;
+  let sumS = 0;
+  let sumX = 0;
+  let sumY = 0;
+  let lazy: { x: number; y: number } | null | undefined;
   for (const z of zooms) {
     if (t < z.time || t > z.time + z.duration) continue;
-    // Soft ramps (~32% of clip) so 3D templates dolly in / out seamlessly
-    const ramp = Math.min(1.15, Math.max(0.4, z.duration * 0.32));
+    const ramp = zoomRamp(z);
     const local = t - z.time;
     let w: number;
-    if (local < ramp) w = easeInOut(local / ramp);
-    else if (local > z.duration - ramp) w = easeInOut(Math.max(0, (z.duration - local) / ramp));
+    if (local < ramp) w = easeZoom(local / ramp);
+    else if (local > z.duration - ramp) w = easeZoom(Math.max(0, (z.duration - local) / ramp));
     else w = 1;
-    if (w <= best.weight) continue;
+    if (w <= 1e-4) continue;
     const follow = z.followCursor;
+    const caret = z.caretProgress ?? 0;
     let fx = z.x;
     let fy = z.y;
-    if (follow) {
-      // Track the smoothed pointer for the whole clip (even across brief inactive
-      // gaps while typing) so field hops stay glued to the mouse.
-      const settle = easeInOut(Math.min(1, local / Math.max(0.1, ramp * 0.4)));
-      const cx = cursor.active || cursor.opacity > 0.02 ? cursor.x : z.x;
-      const cy = cursor.active || cursor.opacity > 0.02 ? cursor.y : z.y;
+    if (lazy === undefined) lazy = opts.cursorAt ? lazyCursor(opts.cursorAt, t) : null;
+    const live = cursor.active || cursor.opacity > 0.02;
+    const cx = lazy ? lazy.x : live ? cursor.x : z.x;
+    const cy = lazy ? lazy.y : live ? cursor.y : z.y;
+    const path = z.caretPath;
+
+    if (path && path.length && t >= path[0]!.t - CARET_LEAD_IN) {
+      // Typing: the camera rides the text caret, not the mouse.
+      let bx = z.x;
+      let by = z.y;
+      if (follow) {
+        const settle = easeZoom((local - ramp) / FOLLOW_SETTLE);
+        bx = lerp(z.x, cx, settle);
+        by = lerp(z.y, cy, settle);
+      }
+      const c = caretAt(path, t);
+      const cw = easeZoom((t - (path[0]!.t - CARET_LEAD_IN)) / CARET_LEAD_IN);
+      fx = lerp(bx, c.x, cw);
+      fy = lerp(by, c.y, cw);
+    } else if (follow) {
+      // Fly straight to the target during the zoom-in, then trail the smoothed pointer.
+      const settle = easeZoom((local - ramp) / FOLLOW_SETTLE);
       fx = lerp(z.x, cx, settle);
       fy = lerp(z.y, cy, settle);
-    }
-    // Typing without follow: ease focus along the line as text grows.
-    if (!follow && (z.caretProgress ?? 0) > 0) {
+      if (caret > 0) {
+        // Extra drift along the typing line while keys land.
+        const u = easeInOut(
+          Math.min(1, Math.max(0, local - ramp * 0.5) / Math.max(0.35, z.duration - ramp)),
+        );
+        fx = Math.min(0.94, fx + caret * u);
+      } else if (cursor.shape === "ibeam") {
+        fx = Math.min(0.94, fx + 0.03);
+      }
+    } else if (caret > 0) {
       const holdStart = ramp;
       const holdEnd = Math.max(holdStart + 0.05, z.duration - ramp);
       const u =
@@ -295,19 +327,90 @@ export function evalZoom(
           : local >= holdEnd
             ? 1
             : easeInOut((local - holdStart) / (holdEnd - holdStart));
-      fx = Math.min(0.94, z.x + z.caretProgress! * u);
-    } else if (follow && cursor.shape === "ibeam") {
-      fx = Math.min(0.94, fx + 0.03);
+      fx = Math.min(0.94, z.x + caret * u);
     }
-    best = {
-      scale: 1 + (z.scale - 1) * w,
-      x: lerp(0.5, fx, w),
-      y: lerp(0.5, fy, w),
-      weight: w,
-    };
+    sumW += w;
+    sumS += w * (z.scale - 1);
+    sumX += w * (fx - 0.5);
+    sumY += w * (fy - 0.5);
   }
 
+  const norm = sumW > 1 ? 1 / sumW : 1;
+  const best: ZoomState = {
+    scale: 1 + sumS * norm,
+    x: 0.5 + sumX * norm,
+    y: 0.5 + sumY * norm,
+    weight: Math.min(1, sumW),
+  };
   return adaptZoomForPortrait(best, opts.stageAspect, opts.contentAspect);
+}
+
+/** Zoom-in / zoom-out length — long, gentle ramps like Screen Studio. */
+const ZOOM_RAMP = 1.0;
+/** Camera starts drifting toward the caret this long before the first typed key. */
+const CARET_LEAD_IN = 0.6;
+/** After arriving on target, how long the camera takes to hand over to pointer follow. */
+const FOLLOW_SETTLE = 0.8;
+
+export function zoomRamp(z: { duration: number }): number {
+  return Math.min(ZOOM_RAMP, Math.max(0.3, z.duration * 0.4));
+}
+
+/** Sine ease — lower peak speed than cubic, so zooms glide rather than snap. */
+function easeZoom(p: number): number {
+  const u = Math.min(1, Math.max(0, p));
+  return 0.5 - 0.5 * Math.cos(Math.PI * u);
+}
+
+/** Trailing weighted average of the pointer (~0.5s) for a camera that lags softly behind. */
+function lazyCursor(
+  cursorAt: (t: number) => CursorFrame,
+  t: number,
+): { x: number; y: number } | null {
+  let sx = 0;
+  let sy = 0;
+  let sw = 0;
+  for (let i = 0; i < 8; i++) {
+    const f = cursorAt(Math.max(0, t - i * 0.07));
+    if (!f.active && f.opacity <= 0.02) continue;
+    const w = 1 - i / 9;
+    sx += f.x * w;
+    sy += f.y * w;
+    sw += w;
+  }
+  return sw > 0 ? { x: sx / sw, y: sy / sw } : null;
+}
+
+function caretPointAt(path: CaretSample[], t: number): { x: number; y: number } {
+  if (t <= path[0]!.t) return path[0]!;
+  const last = path[path.length - 1]!;
+  if (t >= last.t) return last;
+  let lo = 0;
+  let hi = path.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (path[mid]!.t <= t) lo = mid;
+    else hi = mid;
+  }
+  const a = path[lo]!;
+  const b = path[hi]!;
+  const u = (t - a.t) / Math.max(1e-6, b.t - a.t);
+  return { x: lerp(a.x, b.x, u), y: lerp(a.y, b.y, u) };
+}
+
+/** Low-passed caret position so line wraps / per-char steps pan smoothly. */
+function caretAt(path: CaretSample[], t: number): { x: number; y: number } {
+  let sx = 0;
+  let sy = 0;
+  let sw = 0;
+  for (let i = -2; i <= 7; i++) {
+    const p = caretPointAt(path, t - i * 0.07);
+    const w = 1 - Math.abs(i) / 9;
+    sx += p.x * w;
+    sy += p.y * w;
+    sw += w;
+  }
+  return { x: sx / sw, y: sy / sw };
 }
 
 /**
@@ -319,15 +422,15 @@ export function zoomMotionStrength(zooms: ZoomKeyframe[], t: number, enabled = t
   let best = 0;
   for (const z of zooms) {
     if (t < z.time || t > z.time + z.duration) continue;
-    const ramp = Math.min(1.15, Math.max(0.4, z.duration * 0.32));
+    const ramp = zoomRamp(z);
     const local = t - z.time;
     let m = 0;
     if (local < ramp) m = Math.sin((local / ramp) * Math.PI);
     else if (local > z.duration - ramp) m = Math.sin(((z.duration - local) / ramp) * Math.PI);
     best = Math.max(best, m);
   }
-  // Keep blur subtle — heavy ghosting looks unprofessional on product demos.
-  return best * 0.38;
+  // Stays under the compositor's ghosting threshold — zooms read crisp, no sudden smear.
+  return best * 0.12;
 }
 
 /** 0..1 motion during an active camera arc / orbit / dip. */
@@ -390,6 +493,8 @@ type InterestBeat = {
   kindHint?: BeatKind;
   /** Cursor traveled to a new region after the click (open pane → interact). */
   travel?: number;
+  /** Text-caret samples while typing this beat. */
+  caretPath?: CaretSample[];
 };
 
 /**
@@ -561,9 +666,9 @@ function clusterClicks(clicks: ClickPt[]): ClickPt[][] {
     }
     const prev = cur[cur.length - 1]!;
     const dt = c.t - prev.t;
-    const far = dist2(c.x, c.y, prev.x, prev.y) > 0.2;
-    // Same beat: close in time and space. A jump across the screen starts a new beat.
-    if (dt > 1.25 || (dt > 0.55 && far) || (far && dt > 0.35 && cur.length >= 2)) {
+    const d = dist2(c.x, c.y, prev.x, prev.y);
+    // Spreadsheet / form field hop — new beat so Auto can follow each cell.
+    if (d > 0.05 || dt > 1.25 || (d > 0.2 && dt > 0.55)) {
       clusters.push(cur);
       cur = [c];
     } else {
@@ -630,7 +735,7 @@ function scoreInterestBeat(track: CursorTrack, clicks: ClickPt[]): InterestBeat 
 
 /**
  * Click opens UI → pointer glides into the new pane and hangs there.
- * Zoom starts on the click, then followCursor tracks the move into the reveal.
+ * Zoom starts on the approach (before the click), then followCursor tracks into the reveal.
  */
 function findRevealBeats(track: CursorTrack): InterestBeat[] {
   const out: InterestBeat[] = [];
@@ -645,7 +750,7 @@ function findRevealBeats(track: CursorTrack): InterestBeat[] {
     const t1 = Math.min(track.duration, dest.settleT + dest.dwell);
     out.push({
       clicks: [c],
-      t0: Math.max(0, c.t - 0.12),
+      t0: Math.max(0, c.t - 0.45),
       t1,
       // Anchor on the click so punch-in starts there; followCursor carries to the pane.
       x: c.x,
@@ -763,12 +868,17 @@ function findOrbitBeats(track: CursorTrack, duration: number): InterestBeat[] {
 export type AutoZoomHints = {
   /** Timeline typing SFX from the recording — strongest signal for caret follow. */
   typingClips?: { time: number; duration: number }[];
+  /** Extra key-down times (native / demo) when typing SFX clips are sparse. */
+  keyTimes?: number[];
+  /** Real text-caret positions — typing zooms lock onto these over the mouse. */
+  caret?: CaretSample[];
 };
 
 /**
  * Zoom that locks onto the text field being typed into.
  * Mouse rarely moves while typing — use the click that focused the field,
  * then ease focus forward as text grows (caretProgress).
+ * Typing zooms are mandatory (priority 1) over click punches.
  */
 function findTypingBeats(
   track: CursorTrack,
@@ -776,8 +886,29 @@ function findTypingBeats(
   hints?: AutoZoomHints,
 ): InterestBeat[] {
   const out: InterestBeat[] = [];
+  const caret = [...(hints?.caret ?? [])]
+    .filter((c) => c.x > 0.003 && c.y > 0.003 && c.x < 0.997 && c.y < 0.997)
+    .sort((a, b) => a.t - b.t);
+  const hasCaret = caret.length > 0;
+
+  /** First caret sample just after the key (caret updates after the app handles it). */
+  const caretNear = (t0: number): { x: number; y: number } | null => {
+    let before: CaretSample | null = null;
+    for (const c of caret) {
+      if (c.t < t0 - 2.5) continue;
+      if (c.t <= t0) before = c;
+      else if (c.t <= t0 + 0.9) return c;
+      else break;
+    }
+    return before;
+  };
+
+  const caretSlice = (a: number, b: number): CaretSample[] =>
+    caret.filter((c) => c.t >= a - 0.2 && c.t <= b + 0.3);
 
   const fieldFocusAt = (t0: number): { x: number; y: number } => {
+    const c = hasCaret ? caretNear(t0) : null;
+    if (c) return { x: c.x, y: c.y };
     let best: ClickPt | null = null;
     for (const c of track.clicks) {
       if (c.t <= t0 + 0.05 && c.t >= t0 - 5) best = c;
@@ -793,11 +924,13 @@ function findTypingBeats(
 
   const pushRange = (t0: number, t1: number) => {
     const a = Math.max(0, t0);
-    const b = Math.min(duration, Math.max(a + 0.65, t1));
-    if (b - a < 0.55) return;
-    const focus = fieldFocusAt(a + 0.05);
-    if (focus.x < 0.06 || focus.x > 0.94) return;
-    if (focus.y < 0.05 || focus.y > 0.95) return;
+    const b = Math.min(duration, Math.max(a + 0.45, t1));
+    if (b - a < 0.35) return;
+    const path = hasCaret ? caretSlice(a, b) : [];
+    const focus = path.length ? { x: path[0]!.x, y: path[0]!.y } : fieldFocusAt(a + 0.05);
+    // Keep near-edge spreadsheet cells — only drop true chrome extremes.
+    if (focus.x < 0.02 || focus.x > 0.98) return;
+    if (focus.y < 0.02 || focus.y > 0.98) return;
     out.push({
       clicks: [{ t: a, x: focus.x, y: focus.y }],
       t0: a,
@@ -807,34 +940,79 @@ function findTypingBeats(
       spread: 0.06,
       dwell: b - a,
       approach: 0.12,
-      score: 2.55,
+      // Real caret data outranks every heuristic beat.
+      score: path.length ? 3.6 : 3.2,
       kindHint: "typing",
+      caretPath: path.length ? path : undefined,
     });
   };
 
-  // Merge nearby typing SFX into continuous bursts.
+  // Caret continuity: line wraps / Enter keep the zoom; only a jump to another field splits it.
+  const hopLimit = hasCaret ? 0.16 : 0.05;
+
+  // Merge nearby typing SFX — split when the caret/click hopped to another cell.
   const clips = [...(hints?.typingClips ?? [])].sort((a, b) => a.time - b.time);
   let burstStart: number | null = null;
   let burstEnd = 0;
+  let burstFocus = fieldFocusAt(clips[0]?.time ?? 0);
   const flushBurst = () => {
     if (burstStart == null) return;
-    pushRange(burstStart - 0.25, burstEnd + 0.4);
+    pushRange(burstStart - 0.35, burstEnd + 0.55);
     burstStart = null;
   };
   for (const clip of clips) {
     const end = clip.time + Math.max(0.45, clip.duration);
+    const focus = fieldFocusAt(clip.time);
+    const hopped =
+      burstStart != null && dist2(burstFocus.x, burstFocus.y, focus.x, focus.y) > hopLimit;
     if (burstStart == null) {
       burstStart = clip.time;
       burstEnd = end;
-    } else if (clip.time <= burstEnd + 0.85) {
+      burstFocus = focus;
+    } else if (!hopped && clip.time <= burstEnd + 0.7) {
       burstEnd = Math.max(burstEnd, end);
+      if (hasCaret) burstFocus = focus;
     } else {
       flushBurst();
       burstStart = clip.time;
       burstEnd = end;
+      burstFocus = focus;
     }
   }
   flushBurst();
+
+  // Native / demo key times → bursts when SFX clips were missed.
+  const keyTimes = [...(hints?.keyTimes ?? [])].sort((a, b) => a - b);
+  if (keyTimes.length && clips.length < 2) {
+    let kStart: number | null = null;
+    let kEnd = 0;
+    let kFocus = fieldFocusAt(keyTimes[0] ?? 0);
+    const flushKeys = () => {
+      if (kStart == null) return;
+      pushRange(kStart - 0.25, kEnd + 0.4);
+      kStart = null;
+    };
+    for (const kt of keyTimes) {
+      if (kt < 0 || kt > duration) continue;
+      const focus = fieldFocusAt(kt);
+      const hopped =
+        kStart != null && dist2(kFocus.x, kFocus.y, focus.x, focus.y) > hopLimit;
+      if (kStart == null) {
+        kStart = kt;
+        kEnd = kt + 0.35;
+        kFocus = focus;
+      } else if (!hopped && kt <= kEnd + 0.55) {
+        kEnd = Math.max(kEnd, kt + 0.35);
+        if (hasCaret) kFocus = focus;
+      } else {
+        flushKeys();
+        kStart = kt;
+        kEnd = kt + 0.35;
+        kFocus = focus;
+      }
+    }
+    flushKeys();
+  }
 
   // I-beam stretches as a backup when SFX weren't captured.
   let runStart: number | null = null;
@@ -846,18 +1024,28 @@ function findTypingBeats(
       if (runStart == null) runStart = t;
       lastIbeam = t;
     } else if (runStart != null && t - lastIbeam > 0.45) {
-      if (lastIbeam - runStart >= 0.55) pushRange(runStart - 0.15, lastIbeam + 0.4);
+      if (lastIbeam - runStart >= 0.35) pushRange(runStart - 0.15, lastIbeam + 0.4);
       runStart = null;
     }
   }
-  if (runStart != null && lastIbeam - runStart >= 0.55) {
+  if (runStart != null && lastIbeam - runStart >= 0.35) {
     pushRange(runStart - 0.15, lastIbeam + 0.4);
   }
 
   out.sort((a, b) => b.score - a.score);
   const kept: InterestBeat[] = [];
   for (const b of out) {
-    if (kept.some((k) => b.t0 < k.t1 + 0.35 && k.t0 < b.t1 + 0.35)) continue;
+    // Prefer longer typing beats when two overlap the same field.
+    const overlapIdx = kept.findIndex(
+      (k) => b.t0 < k.t1 + 0.2 && k.t0 < b.t1 + 0.2 && dist2(b.x, b.y, k.x, k.y) < 0.08,
+    );
+    if (overlapIdx >= 0) {
+      const existing = kept[overlapIdx]!;
+      if (b.dwell > existing.dwell + 0.1 || b.score > existing.score) {
+        kept[overlapIdx] = b;
+      }
+      continue;
+    }
     kept.push(b);
   }
   return kept;
@@ -917,6 +1105,23 @@ function beatRank(beat: InterestBeat): number {
   return HINT_RANK[beat.kindHint ?? "glance"] ?? 0;
 }
 
+function joinCaretPaths(
+  a: CaretSample[] | undefined,
+  b: CaretSample[] | undefined,
+): CaretSample[] | undefined {
+  if (!a?.length) return b?.length ? b : undefined;
+  if (!b?.length) return a;
+  const seen = new Set<number>();
+  return [...a, ...b]
+    .sort((p, q) => p.t - q.t)
+    .filter((p) => {
+      const k = Math.round(p.t * 1000);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+}
+
 /**
  * Merge only when beats overlap or sit ≤ ~2s apart in the same pane.
  * Gaps of ~2–5s+ stay separate zooms — do not glue the whole recording together.
@@ -969,31 +1174,30 @@ function mergeRegionalBeats(beats: InterestBeat[]): InterestBeat[] {
         prev.x = beat.x;
         prev.y = beat.y;
         prev.clicks = [...beat.clicks];
+        prev.caretPath = beat.caretPath;
         prev.spread = Math.min(prev.spread, 0.08);
         prev.dwell = Math.max(prev.dwell, beat.dwell);
         prev.score = Math.max(prev.score, beat.score);
         prev.travel = 0;
         continue;
       }
-      // Two typing bursts in the same pane — extend; only treat as field-hop
-      // when the caret jumped to a clearly different input.
-      const fieldHop = spatial > 0.14;
+      // Adjacent spreadsheet cells → separate zooms (follow mouse into each).
+      // With a caret path the camera already pans between cells — keep one zoom.
+      if (spatial > 0.05 && !(prev.caretPath?.length && beat.caretPath?.length && gap < 1.2)) {
+        out.push({ ...beat, clicks: [...beat.clicks] });
+        continue;
+      }
       prev.t1 = Math.max(prev.t1, beat.t1);
       prev.clicks = [...prev.clicks, ...beat.clicks];
+      prev.caretPath = joinCaretPaths(prev.caretPath, beat.caretPath);
       prev.dwell = Math.max(prev.dwell, beat.dwell);
       prev.score = Math.max(prev.score, beat.score);
-      if (fieldHop) {
-        // Still typing priority, but allow mild follow between inputs.
-        prev.spread = Math.max(prev.spread, spatial);
-        prev.travel = Math.max(prev.travel ?? 0, spatial);
-        prev.x = beat.x;
-        prev.y = beat.y;
-      }
       continue;
     }
 
     prev.t1 = Math.max(prev.t1, beat.t1);
     prev.clicks = [...prev.clicks, ...beat.clicks];
+    prev.caretPath = joinCaretPaths(prev.caretPath, beat.caretPath);
     prev.spread = Math.max(prev.spread, beat.spread, spatial);
     prev.dwell = Math.max(prev.dwell, beat.dwell);
     prev.travel = Math.max(prev.travel ?? 0, beat.travel ?? 0, spatial);
@@ -1039,6 +1243,7 @@ function coalesceRegionalZooms(zooms: ZoomKeyframe[], duration: number): ZoomKey
     const gap = z.time - prevEnd;
     const spatial = dist2(prev.x, prev.y, z.x, z.y);
 
+    // Keep separate punches for distant cells; glue nearby chatter.
     if (gap > 2.05 || spatial > 0.28) {
       merged.push({ ...z });
       continue;
@@ -1046,15 +1251,21 @@ function coalesceRegionalZooms(zooms: ZoomKeyframe[], duration: number): ZoomKey
 
     const end = Math.max(prevEnd, z.time + z.duration);
     prev.duration = Math.min(duration - prev.time, Math.max(prev.duration, end - prev.time));
-    // Keep the calmer of the two scales when merging chatter — don't inherit a hard punch.
     prev.scale = Math.min(prev.scale, z.scale) + Math.abs(prev.scale - z.scale) * 0.35;
     prev.scale = Math.round(prev.scale * 100) / 100;
     prev.x = (prev.x + z.x) / 2;
     prev.y = (prev.y + z.y) / 2;
     prev.followCursor = prev.followCursor || z.followCursor || spatial > 0.06;
-    if (prev.followCursor) delete prev.caretProgress;
+    const joined = joinCaretPaths(prev.caretPath, z.caretPath);
+    if (joined) {
+      prev.caretPath = joined;
+      prev.x = joined[0]!.x;
+      prev.y = joined[0]!.y;
+    }
+    if (prev.followCursor || joined) delete prev.caretProgress;
     else {
-      prev.caretProgress = Math.max(prev.caretProgress ?? 0, z.caretProgress ?? 0) || undefined;
+      prev.caretProgress =
+        Math.max(prev.caretProgress ?? 0, z.caretProgress ?? 0) || undefined;
     }
   }
 
@@ -1064,12 +1275,28 @@ function coalesceRegionalZooms(zooms: ZoomKeyframe[], duration: number): ZoomKey
   }));
 }
 
+/** True when cursor mostly scrolls vertically (wheel-like) — orbit zooms fight this. */
+function isScrollishWindow(track: CursorTrack, t0: number, t1: number): boolean {
+  let vert = 0;
+  let horiz = 0;
+  let samples = 0;
+  const step = 1 / 20;
+  for (let t = t0; t < t1; t += step) {
+    const a = track.get(t);
+    const b = track.get(t + step);
+    if (!a.active || !b.active) continue;
+    vert += Math.abs(b.y - a.y);
+    horiz += Math.abs(b.x - a.x);
+    samples++;
+  }
+  if (samples < 4) return false;
+  return vert > horiz * 2.2 && vert / samples > 0.012;
+}
+
 /**
- * Intelligent auto zooms: soft default punches, stronger field-lock on typing,
- * reveal follow (click → pane → track mouse), orbit follow, skip sidebars.
- * Typing beats always beat mouse-hover in the same window.
- * Same-region punches coalesce into one continuous follow / typing zoom.
- * `autoScale` is only a bias.
+ * Intelligent auto zooms — priority:
+ * 1) Typing (must lock field + caret)  2) Clicks / menus / reveals  3) Orbit (skip during scroll)
+ * Same-region punches coalesce; `autoScale` is only a bias.
  */
 export function deriveAutoZooms(
   track: CursorTrack,
@@ -1080,13 +1307,22 @@ export function deriveAutoZooms(
   if (track.isEmpty) return [];
 
   const bias = Math.min(3, Math.max(1.4, autoScale));
+  const typingBeats = findTypingBeats(track, duration, hints);
   const clickBeats = clusterClicks(track.clicks)
     .map((c) => scoreInterestBeat(track, c))
     .filter((b): b is InterestBeat => !!b && b.score >= 1.35)
-    .filter((b) => b.t0 >= 0.45);
+    .filter((b) => b.t0 >= 0.45)
+    // Clicks inside an active typing window are secondary — drop them.
+    .filter(
+      (b) =>
+        !typingBeats.some(
+          (t) => b.t0 < t.t1 + 0.15 && t.t0 < b.t1 + 0.15 && dist2(b.x, b.y, t.x, t.y) < 0.22,
+        ),
+    );
 
-  const orbitBeats = findOrbitBeats(track, duration);
-  const typingBeats = findTypingBeats(track, duration, hints);
+  const orbitBeats = findOrbitBeats(track, duration).filter(
+    (b) => !isScrollishWindow(track, b.t0, b.t1),
+  );
   const menuBeats = findMenuBeats(track);
   const revealBeats = findRevealBeats(track);
 
@@ -1100,28 +1336,19 @@ export function deriveAutoZooms(
   });
   const kept: InterestBeat[] = [];
   for (const beat of ranked) {
-    const special =
-      beat.kindHint === "typing" || beat.kindHint === "menu" || beat.kindHint === "reveal";
-    const minGap = special ? 1.6 : 2.8;
     const conflictIdx = kept.findIndex((k) => {
-      const overlap = beat.t0 < k.t1 + 0.9 && k.t0 < beat.t1 + 0.9;
-      const close = Math.abs(k.t0 - beat.t0) < minGap;
-      return overlap || close;
+      const overlap = beat.t0 < k.t1 + 0.45 && k.t0 < beat.t1 + 0.45;
+      // Typing owns a wider neighborhood so click punches can't steal the field.
+      const radius = beat.kindHint === "typing" || k.kindHint === "typing" ? 0.18 : 0.05;
+      const sameCell = dist2(beat.x, beat.y, k.x, k.y) < radius;
+      return overlap && sameCell;
     });
     if (conflictIdx < 0) {
       kept.push(beat);
       continue;
     }
     const existing = kept[conflictIdx]!;
-    // Higher-rank hint (typing > menu > reveal > orbit > click) wins the window.
-    if (beatRank(beat) > beatRank(existing)) {
-      kept[conflictIdx] = beat;
-    } else if (
-      special &&
-      !existing.kindHint &&
-      beat.t0 < existing.t1 + 0.9 &&
-      existing.t0 < beat.t1 + 0.9
-    ) {
+    if (beatRank(beat) > beatRank(existing) || beat.score > existing.score + 0.15) {
       kept[conflictIdx] = beat;
     }
   }
@@ -1137,51 +1364,62 @@ export function deriveAutoZooms(
 
     const holdBase =
       kind === "typing"
-        ? Math.max(1.2, beat.dwell * 0.15)
+        ? Math.max(1.25, beat.dwell * 0.35)
         : kind === "menu"
-          ? 1.35
+          ? 1.2
           : kind === "reveal"
-            ? 1.55
+            ? 1.35
             : kind === "spotlight"
-              ? 1.8
+              ? 1.5
               : kind === "detail"
-                ? 1.45
+                ? 1.25
                 : kind === "orbit"
-                  ? 1.6
+                  ? 1.4
                   : kind === "tour"
-                    ? 1.2
+                    ? 1.1
                     : kind === "glance"
-                      ? 0.7
-                      : 1.1;
-    const hold = Math.min(2.4, Math.max(0.65, holdBase + beat.dwell * (kind === "typing" ? 0.15 : 0.35)));
-    const lead = kind === "typing" ? 0.25 : kind === "reveal" ? 0.22 : kind === "glance" ? 0.18 : 0.28;
-    const time = Math.max(0, beat.t0 - lead);
-    const dur = Math.min(
-      duration - time,
-      Math.max(
-        kind === "typing" ? 1.6 : kind === "reveal" ? 1.85 : 1.35,
-        beat.t1 - beat.t0 + hold + (kind === "typing" ? 0.35 : kind === "reveal" ? 0.7 : 0.55),
-      ),
+                      ? 0.65
+                      : 1.0;
+    // Typing holds through the full burst; clicks stay punchy between cells.
+    const hold = Math.min(
+      kind === "typing" ? 4.5 : 1.7,
+      Math.max(0.7, holdBase + beat.dwell * (kind === "typing" ? 0.45 : 0.28)),
     );
-    if (dur < 1.1) continue;
+    // Screen Studio style: the (slow) zoom-in finishes just as the action starts,
+    // so lead ≈ the ramp length; then hold, then a gentle zoom-out.
+    const lead = kind === "typing" ? 0.95 : kind === "menu" ? 0.85 : 0.9;
+    const time = Math.max(0, beat.t0 - lead);
+    const span = beat.t1 - time;
+    let dur =
+      kind === "typing"
+        ? span + 0.4 + ZOOM_RAMP
+        : Math.min(3.6, span + Math.min(hold, 1.2) + ZOOM_RAMP * 0.8);
+    dur = Math.max(dur, kind === "typing" ? 2.6 : 2.3);
+    dur = Math.min(dur, duration - time);
+    if (dur < 1.6) continue;
+    // Soft glances only if they scored well; never drop typing/menu/reveal/detail.
+    if (kind === "glance" && beat.score < 1.9) continue;
 
     const fieldHop =
       kind === "typing"
         ? (beat.travel ?? 0) > 0.14 || beat.spread > 0.14
         : beat.clicks.length >= 2 || (beat.travel ?? 0) > 0.08 || beat.spread > 0.1;
-    // Typing locks onto the field (caret ease) — mouse hover must not steal focus.
-    // Only follow the pointer when hopping between inputs or for menu/tour/reveal.
+    // Typing: lock field + caret (unless hopping cells).
+    // Clicks/menus/reveals: follow cursor on the approach so zoom tracks into the target before the click.
+    const caretPath = kind === "typing" && beat.caretPath?.length ? beat.caretPath : undefined;
     const followCursor =
-      (kind === "typing" && fieldHop) ||
+      (kind === "typing" && fieldHop && !caretPath) ||
       kind === "menu" ||
       kind === "orbit" ||
       kind === "tour" ||
       kind === "reveal" ||
-      (kind !== "typing" && (fieldHop || beat.spread > 0.11 || beat.clicks.length >= 3));
-
+      kind === "glance" ||
+      kind === "detail" ||
+      kind === "spotlight" ||
+      (kind !== "typing" && (fieldHop || beat.spread > 0.11 || beat.clicks.length >= 2));
     const caretProgress =
-      kind === "typing" && !fieldHop
-        ? Math.min(0.16, 0.04 + beat.dwell * 0.025)
+      kind === "typing" && !fieldHop && !caretPath
+        ? Math.min(0.16, 0.06 + beat.dwell * 0.025)
         : undefined;
 
     out.push({
@@ -1189,14 +1427,34 @@ export function deriveAutoZooms(
       time,
       duration: dur,
       scale,
-      x: beat.x,
-      y: beat.y,
+      x: caretPath ? caretPath[0]!.x : beat.x,
+      y: caretPath ? caretPath[0]!.y : beat.y,
       followCursor,
       auto: true,
       caretProgress,
+      caretPath,
     });
   }
-  return coalesceRegionalZooms(out, duration);
+
+  // Hand-offs: cur's zoom-out overlaps next's zoom-in exactly, so evalZoom crossfades
+  // into a pan while staying zoomed. Short gaps are bridged the same way instead of
+  // pulling all the way out and punching back in.
+  const merged = coalesceRegionalZooms(out, duration);
+  for (let i = 0; i < merged.length - 1; i++) {
+    const cur = merged[i]!;
+    const next = merged[i + 1]!;
+    const curEnd = cur.time + cur.duration;
+    const handoff = next.time + zoomRamp(next);
+    const gap = next.time - curEnd;
+    if (curEnd <= handoff && gap > 1.4) continue;
+    const lastCaret = cur.caretPath?.length ? cur.caretPath[cur.caretPath.length - 1]!.t + 0.4 : 0;
+    const end = Math.max(handoff, lastCaret, cur.time + 1.6);
+    cur.duration = Math.min(duration - cur.time, end - cur.time);
+  }
+  return merged.map((z, i) => ({
+    ...z,
+    id: `auto-${i}-${Math.round(z.time * 1000)}`,
+  }));
 }
 
 const POSITION_ANCHORS: Record<CameraPosition, { x: number; y: number }> = {

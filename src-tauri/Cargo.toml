@@ -19,13 +19,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 device_query = "2.1"
 parking_lot = "0.12"
+portable-pty = "0.8"
 tiny_http = "0.12"
 base64 = "0.22"
+png = "0.17"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 msedge-tts = "0.4"
 open = "5"
 tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-single-instance = { version = "2.4.3", features = ["deep-link"] }
 tauri-plugin-http = "2.5.9"
+# Both ring + aws-lc-rs get enabled transitively; pick one at process start (see lib.rs).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-capture = "2.0"
@@ -36,6 +41,16 @@ windows = { version = "0.58", features = [
   "Win32_Graphics_Gdi",
   "Win32_Foundation",
   "Win32_System_LibraryLoader",
+  "Win32_Storage_Xps",
+  "Win32_UI_Accessibility",
+  "Win32_System_Com",
+  "Win32_System_Variant",
+  "Foundation",
+  "Foundation_Collections",
+  "Globalization",
+  "Graphics_Imaging",
+  "Media_Ocr",
+  "Storage_Streams",
 ] }
 
 # Smaller Store/MSIX payload: LTO + strip, no installer toolchain needed.

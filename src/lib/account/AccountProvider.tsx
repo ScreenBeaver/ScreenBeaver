@@ -11,6 +11,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { isTauri, setMcpEntitled } from "@/lib/studio/nativeBridge";
+import { isRemoteMcpPlan, syncRemoteMcp } from "@/lib/studio/remoteMcp";
 import {
   type AccountMe,
   type PlanFeatures,
@@ -187,6 +188,23 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     void setMcpEntitled(features.mcp === true);
   }, [features.mcp]);
 
+  const planSlug = me?.plan.slug ?? null;
+
+  /** Pro/Team: auto-start Remote MCP tunnel. Free / signed-out: never. */
+  useEffect(() => {
+    if (!isTauri()) return;
+    const enable = isRemoteMcpPlan(planSlug);
+    // Debounce Strict Mode double-mount so we don't spawn two MCP servers on :17356.
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (!cancelled) void syncRemoteMcp(enable);
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [planSlug]);
+
   const requireFeature = useCallback(
     (key: keyof PlanFeatures, _label?: string) => {
       const value = features[key];
@@ -201,7 +219,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       me,
       signedIn: Boolean(me),
       features,
-      planSlug: me?.plan.slug ?? null,
+      planSlug,
       planName: me?.plan.name ?? null,
       refresh,
       signIn,
@@ -214,6 +232,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       loading,
       me,
       features,
+      planSlug,
       refresh,
       signIn,
       signOut,

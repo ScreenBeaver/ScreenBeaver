@@ -135,6 +135,24 @@ export async function listenNativeSound(
   };
 }
 
+export type NativeCaretEvent = {
+  /** Normalized like native-cursor (virtual screen). */
+  x: number;
+  y: number;
+  source: "desktop" | "extension";
+};
+
+export async function listenNativeCaret(
+  handler: (ev: NativeCaretEvent) => void,
+): Promise<Unlisten> {
+  if (!isTauri()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const un = await listen<NativeCaretEvent>("native-caret", (e) => handler(e.payload));
+  return () => {
+    void un();
+  };
+}
+
 export async function listenNativeKeystroke(
   handler: (ev: NativeKeystrokeEvent) => void,
 ): Promise<Unlisten> {

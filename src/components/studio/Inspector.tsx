@@ -240,7 +240,17 @@ function BackgroundPanel() {
       />
       <SegTabs<BackgroundMode>
         value={bg.mode === "motion" ? "wallpaper" : bg.mode}
-        onChange={(mode) => patchBackground({ mode })}
+        onChange={(mode) => {
+          // Always leave motion when picking a static backdrop mode.
+          if (mode === "wallpaper") {
+            patchBackground({
+              mode: "wallpaper",
+              wallpaperId: bg.wallpaperId || "sunbeam",
+            });
+          } else {
+            patchBackground({ mode });
+          }
+        }}
         options={[
           { value: "wallpaper", label: "Wallpaper" },
           { value: "gradient", label: "Gradient" },

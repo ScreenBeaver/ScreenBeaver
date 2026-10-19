@@ -9,6 +9,24 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 mod edge_tts;
+mod screen_ocr;
+mod win_path;
+
+#[cfg(desktop)]
+#[path = "agent_cli.rs"]
+mod agent_cli;
+
+#[cfg(not(desktop))]
+#[path = "agent_cli_stub.rs"]
+mod agent_cli;
+
+#[cfg(desktop)]
+#[path = "remote_mcp.rs"]
+mod remote_mcp;
+
+#[cfg(not(desktop))]
+#[path = "remote_mcp_stub.rs"]
+mod remote_mcp;
 
 #[cfg(windows)]
 #[path = "native_capture.rs"]
@@ -54,6 +72,26 @@ fn set_mcp_entitled(entitled: bool) {
   MCP_ENTITLED.store(entitled, Ordering::Relaxed);
 }
 
+#[tauri::command]
+fn remote_mcp_status(app: AppHandle) -> remote_mcp::RemoteMcpStatus {
+  remote_mcp::status(&app)
+}
+
+#[tauri::command]
+fn remote_mcp_sync(app: AppHandle, enabled: bool) -> Result<remote_mcp::RemoteMcpStatus, String> {
+  remote_mcp::sync(&app, enabled)
+}
+
+#[tauri::command]
+fn remote_mcp_regenerate_token(app: AppHandle) -> Result<remote_mcp::RemoteMcpStatus, String> {
+  remote_mcp::regenerate_token(&app)
+}
+
+#[tauri::command]
+fn remote_mcp_refresh_tunnel(app: AppHandle) -> Result<remote_mcp::RemoteMcpStatus, String> {
+  remote_mcp::refresh_tunnel(&app)
+}
+
 fn respond_mcp_upgrade(request: tiny_http::Request) {
   let body = serde_json::json!({
     "ok": false,
@@ -95,6 +133,7 @@ fn bridge_route_requires_mcp(method: &str, url: &str) -> bool {
     || path.starts_with("/voices")
     || path.starts_with("/tts")
     || path.starts_with("/agent")
+    || path.starts_with("/ocr")
 }
 
 #[derive(Clone, Serialize)]
@@ -178,7 +217,106 @@ fn normalize(px: i32, py: i32) -> (f64, f64) {
   (x, y)
 }
 
+/// Screen position of the focused text caret (Win32 caret, then MSAA OBJID_CARET for Chromium).
+#[cfg(windows)]
+fn read_caret_screen() -> Option<(i32, i32)> {
+  use windows::core::{Interface, VARIANT};
+  use windows::Win32::Foundation::{HWND, POINT};
+  use windows::Win32::Graphics::Gdi::ClientToScreen;
+  use windows::Win32::UI::Accessibility::{AccessibleObjectFromWindow, IAccessible};
+  use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO, OBJID_CARET,
+  };
+  thread_local! {
+    static COM_READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+  }
+  COM_READY.with(|ready| {
+    if !ready.get() {
+      unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+          None,
+          windows::Win32::System::Com::COINIT_MULTITHREADED,
+        );
+      }
+      ready.set(true);
+    }
+  });
+  unsafe {
+    let fg = GetForegroundWindow();
+    if fg.0.is_null() {
+      return None;
+    }
+    let tid = GetWindowThreadProcessId(fg, None);
+    let mut gti = GUITHREADINFO {
+      cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+      ..Default::default()
+    };
+    let have_gti = GetGUIThreadInfo(tid, &mut gti).is_ok();
+    if have_gti && !gti.hwndCaret.0.is_null() {
+      let r = gti.rcCaret;
+      if r.bottom > r.top {
+        let mut pt = POINT {
+          x: r.left,
+          y: (r.top + r.bottom) / 2,
+        };
+        if ClientToScreen(gti.hwndCaret, &mut pt).as_bool() {
+          return Some((pt.x, pt.y));
+        }
+      }
+    }
+    let target: HWND = if have_gti && !gti.hwndFocus.0.is_null() {
+      gti.hwndFocus
+    } else {
+      fg
+    };
+    let mut raw: *mut std::ffi::c_void = std::ptr::null_mut();
+    if AccessibleObjectFromWindow(target, OBJID_CARET.0 as u32, &IAccessible::IID, &mut raw).is_err()
+      || raw.is_null()
+    {
+      return None;
+    }
+    let acc = IAccessible::from_raw(raw);
+    let (mut l, mut t, mut w, mut h) = (0i32, 0i32, 0i32, 0i32);
+    let child = VARIANT::from(0i32);
+    if acc.accLocation(&mut l, &mut t, &mut w, &mut h, &child).is_err() {
+      return None;
+    }
+    if h <= 0 || (l == 0 && t == 0) {
+      return None;
+    }
+    Some((l, t + h / 2))
+  }
+}
+
+#[cfg(not(windows))]
+fn read_caret_screen() -> Option<(i32, i32)> {
+  None
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CaretPayload {
+  x: f64,
+  y: f64,
+  source: &'static str,
+}
+
+fn emit_caret(app: &AppHandle, pos: (i32, i32)) {
+  let (x, y) = normalize(pos.0, pos.1);
+  native_capture::push_caret_sample(x, y);
+  let _ = app.emit(
+    "native-caret",
+    CaretPayload {
+      x,
+      y,
+      source: "desktop",
+    },
+  );
+}
+
 fn emit_cursor(app: &AppHandle, payload: CursorPayload) {
+  // Persist for Auto zooms even if the UI misses stop/import (sidecar on the MP4).
+  native_capture::push_cursor_sample(payload.x, payload.y, payload.down);
   let _ = app.emit("native-cursor", payload);
 }
 
@@ -194,7 +332,34 @@ struct SoundPayload {
 }
 
 fn emit_sound(app: &AppHandle, payload: SoundPayload) {
+  if payload.kind == "typing" {
+    native_capture::push_typing_tick();
+  }
   let _ = app.emit("native-sound", payload);
+}
+
+/// Last key the agent typed — the pointer hook samples the caret after it, exactly
+/// like a human keystroke (injected keys are too short for the 8 ms key poll).
+static AGENT_KEY_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+fn agent_key_tick(app: &AppHandle) {
+  native_capture::mark_agent_driven();
+  *AGENT_KEY_AT.lock() = Some(std::time::Instant::now());
+  emit_sound(
+    app,
+    SoundPayload {
+      kind: "typing",
+      source: "desktop",
+    },
+  );
+}
+
+/// Record the pointer at an agent click edge so down/up never fall between polls.
+fn agent_pointer_sample(down: bool) {
+  native_capture::mark_agent_driven();
+  let (px, py) = input_automation::cursor_pos();
+  let (x, y) = normalize(px, py);
+  native_capture::push_cursor_sample(x, y, down);
 }
 
 #[derive(Clone, Serialize)]
@@ -383,6 +548,32 @@ fn agent_report_result(id: String, body: String) {
   agent_bus().results.lock().insert(id, body);
 }
 
+#[tauri::command]
+fn agent_cli_capabilities() -> agent_cli::AgentCliCapabilities {
+  agent_cli::detect_capabilities()
+}
+
+#[tauri::command]
+fn agent_cli_status() -> agent_cli::AgentCliStatus {
+  agent_cli::current_status()
+}
+
+#[tauri::command]
+fn agent_cli_start(
+  app: AppHandle,
+  provider_id: String,
+  url: String,
+  product_name: Option<String>,
+  cwd: Option<String>,
+) -> Result<agent_cli::AgentCliStatus, String> {
+  agent_cli::start_session(app, provider_id, url, product_name, cwd)
+}
+
+#[tauri::command]
+fn agent_cli_stop() -> Result<agent_cli::AgentCliStatus, String> {
+  agent_cli::stop_session()
+}
+
 fn wait_agent_result(id: &str, timeout: Duration) -> Option<String> {
   let start = Instant::now();
   while start.elapsed() < timeout {
@@ -508,7 +699,7 @@ fn read_cursor_shape(last_handle: &mut isize, sent_icons: &mut std::collections:
       if GetIconInfo(h, &mut ii).is_ok() {
         let w = 128u32;
         let hgt = 128u32;
-        let mut bmi = BITMAPINFO {
+        let bmi = BITMAPINFO {
           bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
             biWidth: w as i32,
@@ -619,6 +810,9 @@ fn start_pointer_hook(app: AppHandle, state: State<'_, HookState>) -> Result<(),
     }
 
     let device = DeviceState::new();
+    let mut last_typing_at: Option<std::time::Instant> = None;
+    let mut last_caret_query = std::time::Instant::now();
+    let mut last_caret: Option<(i32, i32)> = None;
     let mut prev_left = false;
     let mut prev_keys: std::collections::HashSet<Keycode> = std::collections::HashSet::new();
     let mut last_handle: isize = 0;
@@ -738,8 +932,32 @@ fn start_pointer_hook(app: AppHandle, state: State<'_, HookState>) -> Result<(),
                 source: "desktop",
               },
             );
+            last_typing_at = Some(std::time::Instant::now());
             break; // one typing tick per poll
           }
+        }
+      }
+
+      if let Some(agent_at) = *AGENT_KEY_AT.lock() {
+        if last_typing_at.map_or(true, |h| agent_at > h) {
+          last_typing_at = Some(agent_at);
+        }
+      }
+
+      // Caret moves after the app handles the key — keep sampling briefly after each keystroke.
+      if let Some(at) = last_typing_at {
+        if at.elapsed() < Duration::from_millis(450)
+          && last_caret_query.elapsed() >= Duration::from_millis(45)
+        {
+          last_caret_query = std::time::Instant::now();
+          if let Some(pos) = read_caret_screen() {
+            if last_caret != Some(pos) {
+              last_caret = Some(pos);
+              emit_caret(&app_thread, pos);
+            }
+          }
+        } else if at.elapsed() >= Duration::from_millis(450) {
+          last_typing_at = None;
         }
       }
 
@@ -802,7 +1020,9 @@ fn capture_stop(
 ) -> Result<native_capture::CaptureStopResult, String> {
   let result = native_capture::stop_capture()?;
   let _ = stop_pointer_hook(state);
-  let _ = app.emit("native-capture-stopped", &result);
+  if !result.finalizing {
+    let _ = app.emit("native-capture-stopped", &result);
+  }
   Ok(result)
 }
 
@@ -890,19 +1110,110 @@ fn cors_ok<R: std::io::Read>(response: tiny_http::Response<R>) -> tiny_http::Res
 /// Demo mouse control is only allowed while Screen Beaver is actively recording
 /// (native window capture or USB Android mirror).
 fn require_active_demo_capture() -> Result<Option<isize>, String> {
+  require_demo_hwnd(None, None)
+}
+
+/// Input target: active capture, or an explored window (title/hwnd) without recording.
+fn require_demo_hwnd(
+  hwnd: Option<isize>,
+  title_contains: Option<&str>,
+) -> Result<Option<isize>, String> {
   if android_capture::session_active() {
-    return Ok(android_capture::active_hwnd());
+    return Ok(android_capture::active_hwnd().or(hwnd));
   }
-  if !native_capture::is_recording() {
-    return Err(
-      "Demo input is only available during an active Screen Beaver capture. Call start_capture or android_start first."
-        .into(),
-    );
+  if native_capture::is_recording() {
+    return Ok(native_capture::active_hwnd().or(hwnd));
   }
-  Ok(native_capture::active_hwnd())
+  // Explore phase — drive the real cursor on a live window without capturing yet.
+  if hwnd.is_some() || title_contains.is_some() {
+    let h = resolve_capture_hwnd(hwnd, title_contains)?;
+    return Ok(Some(h));
+  }
+  Err(
+    "Demo input needs an active capture, or hwnd/titleContains for explore-without-record."
+      .into(),
+  )
+}
+
+/// Resolve a window for layout / scout screenshots (works without an active capture).
+fn resolve_capture_hwnd(hwnd: Option<isize>, title_contains: Option<&str>) -> Result<isize, String> {
+  if let Some(h) = hwnd {
+    return Ok(h);
+  }
+  if android_capture::session_active() {
+    if let Some(h) = android_capture::active_hwnd() {
+      return Ok(h);
+    }
+  }
+  if native_capture::is_recording() {
+    if let Some(h) = native_capture::active_hwnd() {
+      return Ok(h);
+    }
+  }
+  let needle = title_contains.unwrap_or("Edge").to_lowercase();
+  let targets = native_capture::list_targets()?;
+  // Prefer browser windows; never pick Claude/Cursor chats that mention the product name.
+  let mut best: Option<(isize, u8, u64)> = None;
+  for t in targets {
+    if t.kind != "window" {
+      continue;
+    }
+    let title_l = t.title.to_lowercase();
+    let proc_l = t.process_name.to_lowercase();
+    if native_capture::is_excluded_capture_window(&title_l, &proc_l) {
+      continue;
+    }
+    if !(title_l.contains(&needle) || proc_l.contains(&needle)) {
+      continue;
+    }
+    let hwnd = match t.id.strip_prefix("window:").and_then(|s| s.parse::<isize>().ok()) {
+      Some(h) => h,
+      None => continue,
+    };
+    let area = (t.width as u64).saturating_mul(t.height as u64);
+    let rank: u8 = if proc_l.contains("msedge")
+      || proc_l.contains("chrome")
+      || proc_l.contains("firefox")
+      || proc_l.contains("brave")
+    {
+      2
+    } else {
+      1
+    };
+    let take = match best {
+      None => true,
+      Some((_, br, ba)) => rank > br || (rank == br && area > ba),
+    };
+    if take {
+      best = Some((hwnd, rank, area));
+    }
+  }
+  best
+    .map(|(h, _, _)| h)
+    .ok_or_else(|| format!("No window matching '{needle}'"))
 }
 
 fn spawn_extension_bridge(app: AppHandle) {
+  let hook_app = app.clone();
+  native_capture::set_finalize_hook(Box::new(move |result, auto_import| {
+    let _ = hook_app.emit("native-capture-finalized", result);
+    if auto_import {
+      emit_agent_command(
+        &hook_app,
+        AgentCommandPayload {
+          id: format!(
+            "import-final-{}",
+            std::time::SystemTime::now()
+              .duration_since(std::time::UNIX_EPOCH)
+              .map(|d| d.as_millis())
+              .unwrap_or(0)
+          ),
+          action: "import_last_capture".into(),
+          payload: serde_json::json!({}),
+        },
+      );
+    }
+  }));
   thread::spawn(move || {
     let server = match tiny_http::Server::http(format!("127.0.0.1:{EXT_PORT}")) {
       Ok(s) => s,
@@ -1000,7 +1311,6 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       if method == "POST" && url.starts_with("/agent/command") {
         let mut buf = String::new();
-        use std::io::Read;
         let _ = request.as_reader().read_to_string(&mut buf);
         let parsed: Result<(String, String, serde_json::Value, u64), String> = (|| {
           let v: serde_json::Value =
@@ -1033,11 +1343,147 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
         match parsed {
           Ok((id, action, payload, timeout_ms)) => {
-            let free_ok = action == "status" || action == "notify";
+            let free_ok = action == "status" || action == "notify" || action == "focus_studio";
             if !free_ok && !mcp_entitled() {
               respond_mcp_upgrade(request);
               return;
             }
+
+            // Fast paths that must NOT depend on a responsive WebView.
+            // After capture starts the UI can stall; Claude still needs stop/focus/status.
+            if action == "focus_studio" {
+              if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+              }
+              // Best-effort nudge UI into studio chrome (ignore if frozen).
+              emit_agent_command(
+                &app,
+                AgentCommandPayload {
+                  id: format!("{id}-ui"),
+                  action: "focus_studio".into(),
+                  payload: payload.clone(),
+                },
+              );
+              let body = serde_json::json!({
+                "ok": true,
+                "message": "Screen Beaver focused (Rust)",
+                "id": id,
+              })
+              .to_string()
+              .into_bytes();
+              let response = cors_ok(
+                tiny_http::Response::from_data(body).with_header(
+                  tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                    .unwrap(),
+                ),
+              );
+              let _ = request.respond(response);
+              return;
+            }
+
+            if action == "stop_capture" {
+              let stopped = if android_capture::session_active() {
+                android_capture::stop_session()
+              } else {
+                native_capture::stop_capture_ex(true).map(|r| {
+                  let _ = stop_pointer_hook(app.state::<HookState>());
+                  r
+                })
+              };
+              match stopped {
+                Ok(result) => {
+                  let _ = app.emit("native-capture-stopped", &result);
+                  if !result.finalizing {
+                    // Ask UI to import when awake — do not block on it.
+                    emit_agent_command(
+                      &app,
+                      AgentCommandPayload {
+                        id: format!("{id}-import"),
+                        action: "import_last_capture".into(),
+                        payload: serde_json::json!({}),
+                      },
+                    );
+                  }
+                  let body = serde_json::json!({
+                    "ok": true,
+                    "finalizing": result.finalizing,
+                    "message": if result.finalizing {
+                      "Capture stopped — encoder still writing the MP4; studio imports automatically when it's finished"
+                    } else {
+                      "Capture stopped (Rust) — studio will import when responsive"
+                    },
+                    "id": id,
+                    "path": result.path,
+                    "mediaUrl": result.media_url,
+                    "width": result.width,
+                    "height": result.height,
+                    "durationMs": result.duration_ms,
+                    "sourceLabel": result.source_label,
+                    "hasTake": true,
+                  })
+                  .to_string()
+                  .into_bytes();
+                  let response = cors_ok(
+                    tiny_http::Response::from_data(body).with_header(
+                      tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                        .unwrap(),
+                    ),
+                  );
+                  let _ = request.respond(response);
+                }
+                Err(e) => {
+                  let body = serde_json::json!({ "ok": false, "error": e, "id": id })
+                    .to_string()
+                    .into_bytes();
+                  let response = cors_ok(
+                    tiny_http::Response::from_data(body)
+                      .with_status_code(500)
+                      .with_header(
+                        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                          .unwrap(),
+                      ),
+                  );
+                  let _ = request.respond(response);
+                }
+              }
+              return;
+            }
+
+            if action == "status" || action == "verify_take" {
+              // Prefer UI status, but fall back fast so Claude isn't stuck mid-capture.
+              agent_bus().results.lock().remove(&id);
+              emit_agent_command(
+                &app,
+                AgentCommandPayload {
+                  id: id.clone(),
+                  action: action.clone(),
+                  payload: payload.clone(),
+                },
+              );
+              let body = match wait_agent_result(&id, Duration::from_millis(2_500)) {
+                Some(result) => result.into_bytes(),
+                None => serde_json::json!({
+                  "ok": true,
+                  "degraded": true,
+                  "recording": native_capture::is_recording() || android_capture::session_active(),
+                  "message": "Studio UI slow — bridge alive. Prefer stop_capture / scout; avoid long UI waits.",
+                  "id": id,
+                })
+                .to_string()
+                .into_bytes(),
+              };
+              let response = cors_ok(
+                tiny_http::Response::from_data(body).with_header(
+                  tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                    .unwrap(),
+                ),
+              );
+              let _ = request.respond(response);
+              return;
+            }
+
             agent_bus().results.lock().remove(&id);
             emit_agent_command(
               &app,
@@ -1112,7 +1558,6 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       if method == "POST" && url.starts_with("/tts") {
         let mut buf = String::new();
-        use std::io::Read;
         let _ = request.as_reader().read_to_string(&mut buf);
         let parsed: Result<(String, String), String> = (|| {
           let v: serde_json::Value =
@@ -1158,7 +1603,6 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       if method == "POST" && url.starts_with("/event") {
         let mut buf = String::new();
-        use std::io::Read;
         let _ = request.as_reader().read_to_string(&mut buf);
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&buf) {
           let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("");
@@ -1294,7 +1738,6 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       if method == "POST" && url.starts_with("/capture/open") {
         let mut buf = String::new();
-        use std::io::Read;
         let _ = request.as_reader().read_to_string(&mut buf);
         let parsed: Result<(), String> = (|| {
           let v: serde_json::Value =
@@ -1338,7 +1781,6 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       if method == "POST" && url.starts_with("/capture/start") {
         let mut buf = String::new();
-        use std::io::Read;
         let _ = request.as_reader().read_to_string(&mut buf);
         let parsed: Result<(Option<String>, Option<String>), String> = (|| {
           let v: serde_json::Value =
@@ -1389,7 +1831,7 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
         let result = if android_capture::session_active() {
           android_capture::stop_session()
         } else {
-          native_capture::stop_capture().map(|r| {
+          native_capture::stop_capture_ex(false).map(|r| {
             let _ = stop_pointer_hook(app.state::<HookState>());
             r
           })
@@ -1397,8 +1839,20 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
         match result {
           Ok(result) => {
             let _ = app.emit("native-capture-stopped", &result);
+            // Kick UI import even if the agent times out — WebView may be slow after a long take.
+            if !result.finalizing {
+              emit_agent_command(
+                &app,
+                AgentCommandPayload {
+                  id: format!("import-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)),
+                  action: "import_last_capture".into(),
+                  payload: serde_json::json!({}),
+                },
+              );
+            }
             let body = serde_json::to_vec(&serde_json::json!({
               "ok": true,
+              "finalizing": result.finalizing,
               "path": result.path,
               "mediaUrl": result.media_url,
               "width": result.width,
@@ -1516,7 +1970,6 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       if method == "POST" && url.starts_with("/android/start") {
         let mut buf = String::new();
-        use std::io::Read;
         let _ = request.as_reader().read_to_string(&mut buf);
         let serial = serde_json::from_str::<serde_json::Value>(&buf)
           .ok()
@@ -1589,7 +2042,9 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       // Metadata for the most recent capture (used by import_last_capture).
       if method == "GET" && (url == "/capture/last" || url.starts_with("/capture/last?")) {
-        match native_capture::last_capture_meta() {
+        let meta = native_capture::last_capture_meta()
+          .or_else(native_capture::recover_newest_capture);
+        match meta {
           Some(meta) => {
             let body = serde_json::to_vec(&meta).unwrap_or_else(|_| b"{}".to_vec());
             let response = cors_ok(
@@ -1689,31 +2144,21 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       if method == "POST" && url.starts_with("/input/run") {
         let mut buf = String::new();
-        use std::io::Read;
         let _ = request.as_reader().read_to_string(&mut buf);
         let app_for_type = app.clone();
         let parsed: Result<usize, String> = (|| {
-          let active = require_active_demo_capture()?;
           let v: serde_json::Value =
             serde_json::from_str(&buf).map_err(|e| format!("Invalid JSON: {e}"))?;
+          let hwnd_opt = v.get("hwnd").and_then(|h| h.as_i64()).map(|h| h as isize);
+          let title = v.get("titleContains").and_then(|t| t.as_str());
+          let active = require_demo_hwnd(hwnd_opt, title)?;
           let steps = v
             .get("steps")
             .and_then(|s| s.as_array())
             .ok_or_else(|| "steps array required".to_string())?;
-          let hwnd = v
-            .get("hwnd")
-            .and_then(|h| h.as_i64())
-            .map(|h| h as isize)
-            .or(active);
-          input_automation::run_script(steps, hwnd, || {
-            emit_sound(
-              &app_for_type,
-              SoundPayload {
-                kind: "typing",
-                source: "desktop",
-              },
-            );
-          })
+          let hwnd = hwnd_opt.or(active);
+          native_capture::mark_agent_driven();
+          input_automation::run_script(steps, hwnd, || agent_key_tick(&app_for_type))
         })();
         match parsed {
           Ok(ran) => {
@@ -1744,12 +2189,13 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       if method == "POST" && url.starts_with("/input/move") {
         let mut buf = String::new();
-        use std::io::Read;
         let _ = request.as_reader().read_to_string(&mut buf);
         let parsed: Result<(), String> = (|| {
-          let active = require_active_demo_capture()?;
           let v: serde_json::Value =
             serde_json::from_str(&buf).map_err(|e| format!("Invalid JSON: {e}"))?;
+          let hwnd_opt = v.get("hwnd").and_then(|h| h.as_i64()).map(|h| h as isize);
+          let title = v.get("titleContains").and_then(|t| t.as_str());
+          let active = require_demo_hwnd(hwnd_opt, title)?;
           let nx = v
             .get("contentNx")
             .or_else(|| v.get("nx"))
@@ -1765,15 +2211,17 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
           let in_window = v.get("inWindow").and_then(|t| t.as_bool()).unwrap_or(true);
           let content_space = v.get("contentNx").and_then(|t| t.as_f64()).is_some()
             || v.get("space").and_then(|t| t.as_str()) == Some("content");
-          let hwnd = v
-            .get("hwnd")
-            .and_then(|h| h.as_i64())
-            .map(|h| h as isize)
-            .or(active);
+          let hwnd = hwnd_opt.or(active);
+          native_capture::mark_agent_driven();
           if in_window {
-            let hwnd = hwnd.ok_or_else(|| "No window hwnd — start_capture a window first".to_string())?;
+            let hwnd = hwnd.ok_or_else(|| {
+              "No window hwnd — start_capture, or pass titleContains for explore".to_string()
+            })?;
+            // Always animate the real cursor — never teleport (min 400ms).
+            let duration_ms = duration_ms.max(400);
             input_automation::move_in_window_mapped(hwnd, nx, ny, duration_ms, click, content_space)?;
           } else {
+            let duration_ms = duration_ms.max(400);
             input_automation::smooth_move_norm(nx, ny, duration_ms)?;
             if click {
               input_automation::click_left()?;
@@ -1810,7 +2258,6 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       if method == "POST" && url.starts_with("/input/click") {
         let mut buf = String::new();
-        use std::io::Read;
         let _ = request.as_reader().read_to_string(&mut buf);
         let result = (|| {
           let _ = require_active_demo_capture()?;
@@ -1853,7 +2300,6 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       if method == "POST" && url.starts_with("/input/scroll") {
         let mut buf = String::new();
-        use std::io::Read;
         let _ = request.as_reader().read_to_string(&mut buf);
         let delta = serde_json::from_str::<serde_json::Value>(&buf)
           .ok()
@@ -1888,7 +2334,6 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
 
       if method == "POST" && url.starts_with("/input/type") {
         let mut buf = String::new();
-        use std::io::Read;
         let _ = request.as_reader().read_to_string(&mut buf);
         let app_for_type = app.clone();
         let parsed: Result<(), String> = (|| {
@@ -1902,19 +2347,16 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
           if text.chars().count() > 500 {
             return Err("text too long (max 500 chars)".to_string());
           }
-          let delay_ms = v.get("delayMs").and_then(|t| t.as_u64()).unwrap_or(45);
+          let delay_ms = v.get("delayMs").and_then(|t| t.as_u64()).unwrap_or(150);
           if let Some(hwnd) = active {
             input_automation::focus_hwnd(hwnd)?;
             std::thread::sleep(std::time::Duration::from_millis(80));
           }
           input_automation::type_text(text, delay_ms, &mut || {
-            emit_sound(
-              &app_for_type,
-              SoundPayload {
-                kind: "typing",
-                source: "desktop",
-              },
-            );
+            agent_key_tick(&app_for_type);
+            if let Some(pos) = read_caret_screen() {
+              emit_caret(&app_for_type, pos);
+            }
           })
         })();
         match parsed {
@@ -1961,32 +2403,106 @@ fn handle_bridge_request(mut request: tiny_http::Request, app: AppHandle) {
           }
         }
         let resolved = (|| -> Result<input_automation::WindowLayout, String> {
-          if let Some(h) = hwnd {
-            return input_automation::window_layout(h);
-          }
-          if let Some(h) = require_active_demo_capture()? {
-            return input_automation::window_layout(h);
-          }
-          let needle = title_contains.unwrap_or_else(|| "Edge".into()).to_lowercase();
-          let targets = native_capture::list_targets()?;
-          let hit = targets
-            .into_iter()
-            .find(|t| {
-              t.kind == "window"
-                && (t.title.to_lowercase().contains(&needle)
-                  || t.process_name.to_lowercase().contains(&needle))
-            })
-            .ok_or_else(|| format!("No window matching '{needle}'"))?;
-          let h = hit
-            .id
-            .strip_prefix("window:")
-            .and_then(|s| s.parse::<isize>().ok())
-            .ok_or_else(|| "Bad window id".to_string())?;
+          let h = resolve_capture_hwnd(hwnd, title_contains.as_deref())?;
           input_automation::window_layout(h)
         })();
         match resolved {
           Ok(layout) => {
             let body = serde_json::json!({ "ok": true, "layout": layout }).to_string().into_bytes();
+            let response = cors_ok(
+              tiny_http::Response::from_data(body).with_header(
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                  .unwrap(),
+              ),
+            );
+            let _ = request.respond(response);
+          }
+          Err(e) => {
+            let body = serde_json::json!({ "ok": false, "error": e }).to_string().into_bytes();
+            let response = cors_ok(
+              tiny_http::Response::from_data(body)
+                .with_status_code(400)
+                .with_header(
+                  tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                    .unwrap(),
+                ),
+            );
+            let _ = request.respond(response);
+          }
+        }
+        return;
+      }
+
+      if method == "POST" && (url == "/ocr" || url.starts_with("/ocr?")) {
+        let mut buf = String::new();
+        let _ = request.as_reader().read_to_string(&mut buf);
+        let resolved = (|| -> Result<screen_ocr::OcrResult, String> {
+          use base64::Engine as _;
+          let v: serde_json::Value =
+            serde_json::from_str(&buf).map_err(|e| format!("Invalid JSON: {e}"))?;
+          let b64 = v
+            .get("pngBase64")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| "pngBase64 required".to_string())?;
+          let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64.trim())
+            .map_err(|e| format!("bad base64: {e}"))?;
+          screen_ocr::ocr_png(&bytes)
+        })();
+        let (status, body) = match resolved {
+          Ok(r) => (200, serde_json::json!({ "ok": true, "ocr": r })),
+          Err(e) => (400, serde_json::json!({ "ok": false, "error": e })),
+        };
+        let response = cors_ok(
+          tiny_http::Response::from_data(body.to_string().into_bytes())
+            .with_status_code(status)
+            .with_header(
+              tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                .unwrap(),
+            ),
+        );
+        let _ = request.respond(response);
+        return;
+      }
+
+      if method == "GET" && (url == "/capture/window_shot" || url.starts_with("/capture/window_shot?")) {
+        let q = url.split('?').nth(1).unwrap_or("");
+        let mut hwnd: Option<isize> = None;
+        let mut title_contains: Option<String> = None;
+        let mut max_edge: u32 = 1280;
+        for part in q.split('&') {
+          let mut it = part.splitn(2, '=');
+          let k = it.next().unwrap_or("");
+          let v = percent_decode(it.next().unwrap_or(""));
+          if k == "hwnd" {
+            if let Ok(n) = v.parse::<isize>() {
+              hwnd = Some(n);
+            }
+          } else if k == "titleContains" || k == "title" {
+            title_contains = Some(v);
+          } else if k == "maxEdge" {
+            if let Ok(n) = v.parse::<u32>() {
+              max_edge = n;
+            }
+          }
+        }
+        let resolved = (|| -> Result<(isize, String, input_automation::WindowLayout), String> {
+          let h = resolve_capture_hwnd(hwnd, title_contains.as_deref())?;
+          let layout = input_automation::window_layout(h)?;
+          let png = input_automation::capture_window_png_base64(h, max_edge)?;
+          Ok((h, png, layout))
+        })();
+        match resolved {
+          Ok((h, png_b64, layout)) => {
+            let body = serde_json::json!({
+              "ok": true,
+              "hwnd": h,
+              "mimeType": "image/png",
+              "pngBase64": png_b64,
+              "layout": layout,
+            })
+            .to_string()
+            .into_bytes();
             let response = cors_ok(
               tiny_http::Response::from_data(body).with_header(
                 tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
@@ -2115,8 +2631,15 @@ fn percent_decode(s: &str) -> String {
   String::from_utf8_lossy(&out).into_owned()
 }
 
+fn install_rustls_crypto_provider() {
+  // tauri-plugin-http / reqwest pull both rustls `ring` and `aws-lc-rs` features.
+  // Without an explicit default, the first HTTPS call panics (WebView / plugin-http).
+  let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  install_rustls_crypto_provider();
   tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -2142,11 +2665,19 @@ pub fn run() {
       is_desktop,
       extension_bridge_port,
       set_mcp_entitled,
+      remote_mcp_status,
+      remote_mcp_sync,
+      remote_mcp_regenerate_token,
+      remote_mcp_refresh_tunnel,
       start_pointer_hook,
       stop_pointer_hook,
       edge_tts_list_voices,
       edge_tts_synthesize,
       agent_report_result,
+      agent_cli_capabilities,
+      agent_cli_status,
+      agent_cli_start,
+      agent_cli_stop,
       capture_list_targets,
       capture_start,
       capture_stop,
@@ -2183,6 +2714,11 @@ pub fn run() {
       spawn_extension_bridge(app.handle().clone());
       Ok(())
     })
-    .run(tauri::generate_context!())
-    .expect("error while running Screen Beaver");
+    .build(tauri::generate_context!())
+    .expect("error while building Screen Beaver")
+    .run(|_app_handle, event| {
+      if let tauri::RunEvent::Exit = event {
+        remote_mcp::shutdown();
+      }
+    });
 }

@@ -10,6 +10,8 @@ import {
   Activity,
   Bot,
   Play,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { useStudio } from "@/lib/studio/store";
 import {
@@ -29,7 +31,11 @@ import { applyTheme, getStoredTheme, toggleTheme, type AppTheme } from "@/lib/th
 import { toast } from "sonner";
 import { classifyMediaFile } from "@/lib/studio/mediaKind";
 import { cn } from "@/lib/utils";
-import { playClick } from "@/lib/studio/sounds";
+import {
+  playClick,
+  setUiSoundsEnabled,
+  uiSoundsEnabled,
+} from "@/lib/studio/sounds";
 import {
   getWeeklyActivity,
   listHomeActivity,
@@ -40,6 +46,9 @@ import {
   type WeeklyActivityDay,
 } from "@/lib/studio/homeActivity";
 import { useAccount } from "@/lib/account/AccountProvider";
+import { AgentDemoLauncher } from "@/components/studio/AgentDemoLauncher";
+import { RemoteMcpPanel } from "@/components/studio/RemoteMcpPanel";
+import { isRemoteMcpPlan } from "@/lib/studio/remoteMcp";
 
 type SideTab = "home" | "projects" | "activity" | "mcp";
 type HeroMode = "create" | "record";
@@ -72,8 +81,10 @@ export function StartPage({
 }) {
   const studio = useStudio();
   const { reset, replaceProject, setTake } = studio;
-  const { features, planName, signedIn, me, upgrade, openAccount, signIn } = useAccount();
+  const { features, planName, planSlug, signedIn, me, upgrade, openAccount, signIn } = useAccount();
   const mcpEntitled = features?.mcp === true;
+  const remoteMcp = isRemoteMcpPlan(planSlug);
+  const [uiSoundsOn, setUiSoundsOn] = useState(() => uiSoundsEnabled());
 
   const openIntoStudio = () => onEnterStudio();
 
@@ -315,6 +326,23 @@ export function StartPage({
             <RailButton
               light={light}
               active={false}
+              title={
+                uiSoundsOn
+                  ? "Mute click & SFX (preview + export)"
+                  : "Enable click & SFX (preview + export)"
+              }
+              onClick={() => {
+                const next = !uiSoundsOn;
+                setUiSoundsEnabled(next);
+                setUiSoundsOn(next);
+                if (next) playClick();
+              }}
+            >
+              {uiSoundsOn ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+            </RailButton>
+            <RailButton
+              light={light}
+              active={false}
               title={theme === "dark" ? "Light mode" : "Dark mode"}
               onClick={() => {
                 playClick();
@@ -402,6 +430,16 @@ export function StartPage({
                 <Play className="h-3.5 w-3.5 fill-current" />
                 {h.cta}
               </button>
+
+              {hero === "create" ? (
+                <div className="mt-6 max-w-xl">
+                  <AgentDemoLauncher
+                    light={false}
+                    mcpEntitled={mcpEntitled}
+                    onEnterStudio={openIntoStudio}
+                  />
+                </div>
+              ) : null}
             </div>
 
             {/* Bottom glass widgets over splash — LoL dashboard essence */}
@@ -509,6 +547,7 @@ export function StartPage({
             week={week}
             mcpLog={mcpLog}
             mcpEntitled={mcpEntitled}
+            remoteMcp={remoteMcp}
             onBack={() => {
               playClick();
               setTab("home");
@@ -751,6 +790,7 @@ function PanelView({
   week,
   mcpLog,
   mcpEntitled,
+  remoteMcp,
   onBack,
   onOpen,
   onDelete,
@@ -764,6 +804,7 @@ function PanelView({
   week: WeeklyActivityDay[];
   mcpLog: HomeActivityEntry[];
   mcpEntitled: boolean;
+  remoteMcp: boolean;
   onBack: () => void;
   onOpen: (e: (typeof library)[number]) => void;
   onDelete: (id: string) => void;
@@ -885,20 +926,25 @@ function PanelView({
               <ActivityList entries={activity} light={light} />
             )}
           </div>
-        ) : mcpLog.length === 0 ? (
-          <EmptyPanel light={light}>
-            {mcpEntitled
-              ? "No MCP commands logged yet."
-              : "MCP activity will appear here when the agent runs tools."}
-          </EmptyPanel>
         ) : (
           <div className="space-y-4">
-            {!mcpEntitled ? (
-              <p className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-900 dark:text-amber-100/90">
-                Showing local MCP log.
-              </p>
-            ) : null}
-            <ActivityList entries={mcpLog} light={light} />
+            {remoteMcp ? <RemoteMcpPanel light={light} /> : null}
+            {mcpLog.length === 0 ? (
+              <EmptyPanel light={light}>
+                {mcpEntitled
+                  ? "No MCP commands logged yet."
+                  : "MCP activity will appear here when the agent runs tools."}
+              </EmptyPanel>
+            ) : (
+              <>
+                {!mcpEntitled ? (
+                  <p className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-900 dark:text-amber-100/90">
+                    Showing local MCP log.
+                  </p>
+                ) : null}
+                <ActivityList entries={mcpLog} light={light} />
+              </>
+            )}
           </div>
         )}
       </div>

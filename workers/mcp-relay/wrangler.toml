@@ -1,0 +1,18 @@
+name = "screen-beaver-mcp-relay"
+main = "src/index.ts"
+compatibility_date = "2025-03-01"
+
+# Branded host — custom_domain creates/fixes the DNS record on the CF zone
+# (replaces any stray Vercel CNAME that breaks TLS).
+routes = [
+  { pattern = "mcp.screenbeaver.com", custom_domain = true }
+]
+
+[[durable_objects.bindings]]
+name = "SESSIONS"
+class_name = "McpSession"
+
+[[migrations]]
+tag = "v1"
+# Free plan requires SQLite-backed Durable Objects
+new_sqlite_classes = ["McpSession"]

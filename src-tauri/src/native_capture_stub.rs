@@ -43,6 +43,36 @@ pub struct CaptureStopResult {
   pub cursor: Vec<CursorSampleDto>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub typing: Vec<TypingBurstDto>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub caret: Vec<CaretSampleDto>,
+  #[serde(default)]
+  pub agent_driven: bool,
+  #[serde(default)]
+  pub finalizing: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaretSampleDto {
+  pub t: f64,
+  pub x: f64,
+  pub y: f64,
+}
+
+pub fn mark_agent_driven() {}
+
+pub fn push_typing_tick() {}
+
+pub fn push_caret_sample(_x: f64, _y: f64) {}
+
+pub fn set_finalize_hook(_hook: Box<dyn Fn(&CaptureStopResult, bool) + Send + Sync>) {}
+
+pub fn is_finalizing() -> bool {
+  false
+}
+
+pub fn stop_capture_ex(_auto_import: bool) -> Result<CaptureStopResult, String> {
+  stop_capture()
 }
 
 pub fn media_url_for(path: &str) -> String {
@@ -75,11 +105,19 @@ pub fn is_recording() -> bool {
   false
 }
 
+pub fn begin_cursor_log() {}
+
+pub fn push_cursor_sample(_x: f64, _y: f64, _down: bool) {}
+
 pub fn start_capture(
   _window_id: Option<String>,
   _title_contains: Option<String>,
 ) -> Result<serde_json::Value, String> {
   Err("Native capture is only available on Windows desktop".into())
+}
+
+pub fn recover_newest_capture() -> Option<CaptureStopResult> {
+  None
 }
 
 pub fn stop_capture() -> Result<CaptureStopResult, String> {

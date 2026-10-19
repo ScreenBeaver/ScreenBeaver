@@ -41,4 +41,20 @@ if (!html.includes("sw-app-theme")) {
   console.warn("Warning: theme boot script missing from prerendered shell.");
 }
 
+// Vite/TanStack SPA emit may omit `public/` copies into dist/client — ship them for Tauri.
+const publicDir = path.join(root, "public");
+const copyDirs = ["wallpapers", "sounds", "home"];
+for (const name of copyDirs) {
+  const from = path.join(publicDir, name);
+  const to = path.join(clientDir, name);
+  if (!fs.existsSync(from)) continue;
+  fs.cpSync(from, to, { recursive: true });
+  console.log(`Copied public/${name} → dist/client/${name}`);
+}
+for (const file of ["favicon.ico", "logo.png", "apple-touch-icon.png", "auth-motion-blur.png"]) {
+  const from = path.join(publicDir, file);
+  const to = path.join(clientDir, file);
+  if (fs.existsSync(from)) fs.copyFileSync(from, to);
+}
+
 console.log("Tauri frontend ready:", path.relative(root, indexPath));

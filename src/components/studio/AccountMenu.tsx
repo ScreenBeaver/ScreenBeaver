@@ -1,5 +1,10 @@
-import { UserRound } from "lucide-react";
-import { playClick } from "@/lib/studio/sounds";
+import { useState } from "react";
+import { UserRound, Volume2, VolumeX } from "lucide-react";
+import {
+  playClick,
+  setUiSoundsEnabled,
+  uiSoundsEnabled,
+} from "@/lib/studio/sounds";
 import { useAccount } from "@/lib/account/AccountProvider";
 import {
   DropdownMenu,
@@ -13,8 +18,16 @@ import {
 export function AccountMenu() {
   const { loading, signedIn, me, planName, signIn, signOut, upgrade, openAccount } =
     useAccount();
+  const [soundsOn, setSoundsOn] = useState(() => uiSoundsEnabled());
 
   const badge = signedIn ? planName || "Free" : "Guest";
+
+  const toggleSounds = () => {
+    const next = !soundsOn;
+    setUiSoundsEnabled(next);
+    setSoundsOn(next);
+    if (next) playClick();
+  };
 
   return (
     <DropdownMenu>
@@ -47,6 +60,20 @@ export function AccountMenu() {
             <span className="text-[12px]">Not signed in</span>
           )}
         </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={(e) => {
+            e.preventDefault();
+            toggleSounds();
+          }}
+        >
+          {soundsOn ? (
+            <Volume2 className="mr-2 h-3.5 w-3.5" />
+          ) : (
+            <VolumeX className="mr-2 h-3.5 w-3.5" />
+          )}
+          {soundsOn ? "Click & SFX sounds on" : "Click & SFX sounds off"}
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         {!signedIn ? (
           <DropdownMenuItem

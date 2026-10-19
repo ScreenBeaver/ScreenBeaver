@@ -6,8 +6,21 @@
 import { SOUND_URLS, type SoundKind } from "./soundTrack";
 
 let ctx: AudioContext | null = null;
-let muted = false;
+/** UI click/hover SFX — off by default (can sound cheap); user can enable in Account menu. */
+const UI_SOUNDS_KEY = "screenbeaver.uiSounds";
+let muted = readStoredMuted();
 let unlockBound = false;
+
+function readStoredMuted(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const v = localStorage.getItem(UI_SOUNDS_KEY);
+    if (v === null) return true; // default: muted
+    return v !== "1" && v !== "true" && v !== "on";
+  } catch {
+    return true;
+  }
+}
 
 const buffers: Partial<Record<SoundKind, AudioBuffer | null>> = {};
 let loadPromise: Promise<void> | null = null;
@@ -304,10 +317,35 @@ export function playEdit() {
 
 export function setUiSoundsMuted(v: boolean) {
   muted = v;
+  if (typeof window === "undefined") return;
+  try {
+    // Store enabled state (1 = sounds on) so default-missing stays muted.
+    localStorage.setItem(UI_SOUNDS_KEY, v ? "0" : "1");
+  } catch {
+    /* ignore */
+  }
+  if (v) stopTypingBed();
+}
+
+/**
+ * Enable or disable click / whoosh / typing / shimmer SFX.
+ * Applies to live UI feedback, timeline preview playback, and MP4 export mix.
+ */
+export function setUiSoundsEnabled(enabled: boolean) {
+  setUiSoundsMuted(!enabled);
+}
+
+/** Whether timeline SFX (clicks, whoosh, typing, shimmer) mix into export. */
+export function exportSfxEnabled() {
+  return !muted;
 }
 
 export function uiSoundsMuted() {
   return muted;
+}
+
+export function uiSoundsEnabled() {
+  return !muted;
 }
 
 /** Decode all SFX buffers (for export mixing). */

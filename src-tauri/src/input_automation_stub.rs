@@ -2,6 +2,10 @@
 
 use serde_json::Value;
 
+pub fn cursor_pos() -> (i32, i32) {
+  (0, 0)
+}
+
 pub fn smooth_move_norm(_nx: f64, _ny: f64, _duration_ms: u64) -> Result<(), String> {
   Err("Input automation is Windows-only".into())
 }
@@ -80,6 +84,10 @@ pub fn content_to_window_norm(_layout: &WindowLayout, cnx: f64, cny: f64) -> (f6
 
 pub fn window_layout(_hwnd: isize) -> Result<WindowLayout, String> {
   Err("Input automation is Windows-only".into())
+}
+
+pub fn capture_window_png_base64(_hwnd: isize, _max_edge: u32) -> Result<String, String> {
+  Err("Window screenshot is Windows-only".into())
 }
 
 pub fn run_script<F>(

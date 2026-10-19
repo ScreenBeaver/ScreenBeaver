@@ -21,7 +21,7 @@ The MCP talks to the **local desktop bridge** only (`http://127.0.0.1:17355` by 
 
 | # | Package | npm name | Version | Scoped? | Notes |
 |---|---------|----------|---------|---------|-------|
-| 1 | Screen Beaver MCP | `screen-beaver-mcp` | `0.1.1` | No | Lives in `mcp/` — **zero runtime deps** (bundled) |
+| 1 | Screen Beaver MCP | `screen-beaver-mcp` | `0.2.0` | No | Lives in `mcp/` — **zero runtime deps** (bundled); stdio + Streamable HTTP |
 
 Bump `version` in `mcp/package.json` before re-publishing. Follow semver.
 
@@ -49,7 +49,7 @@ Complete before any `npm publish`:
 ```json
 {
   "name": "screen-beaver-mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "MIT",
   "type": "module",
   "bin": { "screen-beaver-mcp": "./dist/index.js" },
@@ -313,6 +313,13 @@ Only switch project/user MCP config to `npx -y screen-beaver-mcp` when validatin
 | Desktop (default) | `http://127.0.0.1:17355` |
 | Override | `SCREEN_BEAVER_BRIDGE` (or legacy `SCREEN_WEAVER_BRIDGE`) |
 
+| MCP env / flag | Purpose |
+|----------------|---------|
+| (default) / stdio | Cursor / Claude Desktop via `npx` |
+| `--http` or `SCREEN_BEAVER_MCP_TRANSPORT=http` | Streamable HTTP for remote agents (BetterClaw) |
+| `SCREEN_BEAVER_MCP_PORT` / `--port` | HTTP listen port (default `17356`, bind `127.0.0.1`) |
+| `SCREEN_BEAVER_MCP_TOKEN` | **Required** in HTTP mode — Bearer token |
+
 ### Flow
 
 ```
@@ -321,13 +328,22 @@ Cursor / Claude  →  screen-beaver-mcp (stdio)
               Screen Beaver desktop bridge :17355
                          ↓
               capture / demo / recipe / export APIs
+
+BetterClaw / Claude.ai → https://mcp.screenbeaver.com/mcp?token=…
+                                        ↓ Worker relay (workers/mcp-relay)
+                         Desktop long-poll → screen-beaver-mcp --http (:17356/mcp)
+                                        ↓ HTTP
+                         Screen Beaver desktop bridge :17355
+
+Fallback (relay down): Cloudflare quick tunnel (*.trycloudflare.com)
 ```
 
 | Concern | Answer |
 |---------|--------|
-| Cloud MCP host required? | **No** — local stdio + local bridge |
+| Cloud MCP host required? | **No** for Cursor — local stdio + local bridge. Remote agents use `mcp.screenbeaver.com` (or temp tunnel). |
 | Desktop must be open? | **Yes** for tool calls |
 | npm publish updates Store app? | **No** |
+| Relay deploy | See [docs/MCP_RELAY.md](./MCP_RELAY.md) |
 
 ---
 

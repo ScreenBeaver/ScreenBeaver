@@ -92,8 +92,16 @@ export function getWallpaper(id: string): Wallpaper {
   return WALLPAPERS.find((w) => w.id === id) ?? WALLPAPERS[0]!;
 }
 
+/** Resolve `/public` paths for Vite web + Tauri (`base: "./"`). */
+export function publicAssetUrl(absPath: string): string {
+  const clean = absPath.replace(/^\//, "");
+  const base = (import.meta.env.BASE_URL || "/").replace(/\/?$/, "/");
+  return `${base}${clean}`;
+}
+
 export function wallpaperImageUrl(id: string): string | null {
-  return getWallpaper(id).imageUrl ?? null;
+  const raw = getWallpaper(id).imageUrl ?? null;
+  return raw ? publicAssetUrl(raw) : null;
 }
 
 /** URL to load for canvas paint / export (built-in photo or custom upload). */
@@ -111,7 +119,7 @@ export function resolveBackgroundImageUrl(bg: {
 
 /** CSS representation, used for the swatch grid only. */
 export function wallpaperCss(w: Wallpaper): string {
-  if (w.imageUrl) return `url(${w.imageUrl})`;
+  if (w.imageUrl) return `url(${publicAssetUrl(w.imageUrl)})`;
   const angle = w.angle ?? 135;
   const stops = w.stops ?? ["#334155", "#0f172a"];
   return `linear-gradient(${angle}deg, ${stops.join(", ")})`;
@@ -121,6 +129,7 @@ export function wallpaperCss(w: Wallpaper): string {
 export function wallpaperSwatchCss(w: Wallpaper, thumbDataUrl?: string | null): string {
   if (w.imageUrl) {
     if (thumbDataUrl) return `url(${thumbDataUrl})`;
+    // Prefer gradient placeholder until thumb loads (avoids broken absolute /wallpapers in Tauri).
     return "linear-gradient(145deg, #1e293b, #0f172a 55%, #334155)";
   }
   return wallpaperCss(w);
@@ -136,13 +145,18 @@ let thumbQueue: Promise<void> = Promise.resolve();
  * Full wallpapers stay for Stage/export only — loading all 14 at once crashed Store certification.
  */
 export function ensureWallpaperThumb(imageUrl: string): Promise<string | null> {
-  const cached = thumbCache.get(imageUrl);
+  const loadUrl =
+    imageUrl.startsWith("data:") || imageUrl.startsWith("blob:") || imageUrl.startsWith("./") || imageUrl.startsWith("http")
+      ? imageUrl
+      : publicAssetUrl(imageUrl);
+
+  const cached = thumbCache.get(loadUrl);
   if (cached) return Promise.resolve(cached);
 
   return new Promise((resolve) => {
     thumbQueue = thumbQueue
       .then(async () => {
-        const hit = thumbCache.get(imageUrl);
+        const hit = thumbCache.get(loadUrl);
         if (hit) {
           resolve(hit);
           return;
@@ -153,7 +167,7 @@ export function ensureWallpaperThumb(imageUrl: string): Promise<string | null> {
           await new Promise<void>((res, rej) => {
             img.onload = () => res();
             img.onerror = () => rej(new Error("thumb failed"));
-            img.src = imageUrl;
+            img.src = loadUrl;
           });
           const scale = THUMB_MAX / Math.max(img.naturalWidth || img.width || 1, 1);
           const w = Math.max(1, Math.round((img.naturalWidth || img.width) * scale));
@@ -168,7 +182,7 @@ export function ensureWallpaperThumb(imageUrl: string): Promise<string | null> {
           }
           ctx.drawImage(img, 0, 0, w, h);
           const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
-          thumbCache.set(imageUrl, dataUrl);
+          thumbCache.set(loadUrl, dataUrl);
           img.src = "";
           resolve(dataUrl);
         } catch {

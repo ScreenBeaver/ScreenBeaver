@@ -1,0 +1,15 @@
+{
+  "name": "screen-beaver-mcp-relay",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "login": "wrangler login"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261006.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.151.0"
+  }
+}

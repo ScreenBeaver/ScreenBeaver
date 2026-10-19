@@ -285,6 +285,7 @@ function Editor() {
           typingClips: (sounds ?? [])
             .filter((s) => s.kind === "typing")
             .map((s) => ({ time: s.time, duration: s.duration })),
+          caret: newTake.caret,
         })
       : [];
 

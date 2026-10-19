@@ -1,7 +1,7 @@
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import { renderScene, makeCursorTrack, stageAspect, type SceneMedia } from "./compositor";
 import type { ProjectState, RecordingTake, VoiceoverClip } from "./types";
-import { getSoundBuffers } from "./sounds";
+import { exportSfxEnabled, getSoundBuffers } from "./sounds";
 import type { SoundClip, SoundKind } from "./soundTrack";
 import { editDuration, timelineToSource } from "./videoEdit";
 
@@ -307,8 +307,11 @@ async function encodeMixedAudio(
       mixVoiceoverInto(interleaved, channels, sampleRate, start, voClips, voBuffers);
     }
 
-    const inRange = sounds.filter((s) => s.time >= start - 0.05 && s.time <= end + 0.5);
-    mixSfxInto(interleaved, channels, sampleRate, 0, inRange, sfxBuffers, start);
+    // Respect Account → Click & SFX sounds: off = silent export (clips stay on timeline).
+    if (exportSfxEnabled()) {
+      const inRange = sounds.filter((s) => s.time >= start - 0.05 && s.time <= end + 0.5);
+      mixSfxInto(interleaved, channels, sampleRate, 0, inRange, sfxBuffers, start);
+    }
 
     const encoder = new AudioEncoder({
       output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
@@ -370,7 +373,7 @@ export async function exportProject(
   const target = new ArrayBufferTarget();
   const hasAudio = !!(
     take.micUrl ||
-    (project.sounds && project.sounds.length > 0) ||
+    (exportSfxEnabled() && project.sounds && project.sounds.length > 0) ||
     (project.voiceover?.enabled && project.voiceover.clips?.length) ||
     (project.music?.enabled && project.music.url)
   );

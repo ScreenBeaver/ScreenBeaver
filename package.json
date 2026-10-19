@@ -13,12 +13,14 @@
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build --no-bundle",
+    "desktop:build:installer": "tauri build --bundles nsis",
     "desktop:prepare-frontend": "npm run build && node scripts/prepare-tauri-frontend.mjs",
     "desktop:stage-msix": "powershell -ExecutionPolicy Bypass -File ./packaging/msix/stage-payload.ps1",
     "desktop:build:store": "tauri build --no-bundle --config src-tauri/tauri.microsoftstore.conf.json && npm run desktop:stage-msix",
     "mcp": "npm --prefix mcp run start",
     "mcp:install": "npm --prefix mcp install",
-    "mcp:build": "npm --prefix mcp run build"
+    "mcp:build": "npm --prefix mcp run build",
+    "mcp:prepare-resource": "node scripts/prepare-mcp-resource.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

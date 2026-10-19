@@ -694,8 +694,9 @@ function layoutFramedCapture(
   chrome: WindowChrome,
 ) {
   const portrait = W / Math.max(1, H) < 0.92;
-  const padScale = portrait ? 0.18 : 0.48;
-  const pad = (paddingPct / 100) * Math.min(W, H) * padScale;
+  // Honest % of the shorter stage edge (padding:10 → ~10% inset). Soft cap so old 40+ projects don't explode.
+  const padFrac = Math.min(0.22, Math.max(0, paddingPct / 100));
+  const pad = padFrac * Math.min(W, H);
   const availW = Math.max(16, W - pad * 2);
   const availH = Math.max(16, H - pad * 2);
   const toolbarH = chromeHeight(chrome ?? "none", availH);
@@ -731,8 +732,8 @@ function layoutFramedCapture(
   const dx = (W - dw) / 2;
   // Slightly high in the frame — reads better for social / phone previews.
   const dy = portrait ? (H - dh) * 0.4 : (H - dh) / 2;
-  // Radius from the full chrome box so outer corners match fill, clip, and stroke.
-  const radius = (radiusPct / 100) * Math.min(dw, dh) * 0.5;
+  // Corner radius as % of the shorter framed edge (radius:4 → ~4%).
+  const radius = Math.min(dw, dh) * Math.min(0.45, Math.max(0, radiusPct / 100));
 
   return { dx, dy, dw, dh, toolbarH, radius, keepW, contentAspect, portrait };
 }
@@ -833,6 +834,7 @@ export function renderScene(
     enabled: project.zoom?.enabled !== false,
     stageAspect: stageA,
     contentAspect,
+    cursorAt: input.cursorTrack ? (tt: number) => input.cursorTrack!.get(tt) : undefined,
   };
   const zoomRaw = evalZoom(project.zooms, time, cursor, zoomOpts);
   // Map focus through crop + native chrome cut + portrait side-crop

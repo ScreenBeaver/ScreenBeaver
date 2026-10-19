@@ -65,8 +65,8 @@ export const DEFAULT_PROJECT: ProjectState = {
   },
   frame: {
     ratio: "16:9",
-    padding: 34,
-    radius: 26,
+    padding: 10,
+    radius: 4,
     shadow: 62,
     crop: { x: 0, y: 0, w: 1, h: 1 },
     chrome: "browser",
@@ -309,7 +309,7 @@ interface StudioContextValue {
   removeSound: (id: string) => void;
   setSounds: (sounds: SoundClip[]) => void;
   patchTrim: (patch: Partial<ProjectState["trim"]>) => void;
-  regenerateAutoZooms: () => void;
+  regenerateAutoZooms: () => { autoZooms: number; cursorSamples: number; zoomMode: string };
   take: RecordingTake | null;
   setTake: (t: RecordingTake | null) => void;
   clock: Clock;
@@ -441,6 +441,9 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setTake = useCallback((t: RecordingTake | null) => {
+    // Keep takeRef in sync immediately — MCP apply_recipe / regenerateAutoZooms
+    // often run in the same turn as import, before React re-renders.
+    takeRef.current = t;
     setTakeState(t);
   }, []);
 
@@ -650,37 +653,57 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       patchTrim: (patch) =>
         commit((p) => ({ ...p, trim: { ...p.trim, ...patch } }), coalesceKeys("trim", patch)),
       regenerateAutoZooms: () => {
+        const currentTake = takeRef.current;
+        const cursorSamples = currentTake?.cursor?.length ?? 0;
+        let autoZooms = 0;
+        let zoomMode: string = "auto";
         commit((p) => {
-          const currentTake = takeRef.current;
           if (!currentTake) return p;
           const track = makeCursorTrack(currentTake, p.cursor.smoothing, p.cursor.autoHideIdle);
-          const wantAuto = p.zoom.enabled !== false && (p.zoom.mode ?? "auto") === "auto";
+          // Always rebuild Auto punches when regenerating — don't stay stuck in manual.
+          const zoom = { ...p.zoom, enabled: true, mode: "auto" as const };
+          zoomMode = "auto";
           const manuals = p.zooms.filter((z) => !z.auto);
-          const autos = wantAuto
-            ? deriveAutoZooms(track, currentTake.duration, p.zoom.autoScale, {
-                typingClips: (p.sounds ?? [])
-                  .filter((s) => s.kind === "typing")
-                  .map((s) => ({ time: s.time, duration: s.duration })),
-              })
-            : [];
-          const zooms =
-            p.zoom.enabled === false ? manuals : mergeZoomTracks(manuals, autos);
+          const typingClips = (p.sounds ?? [])
+            .filter((s) => s.kind === "typing")
+            .map((s) => ({ time: s.time, duration: s.duration }));
+          // Shortcut / keycap cues + typing clip onsets → denser typing bursts.
+          const keyTimes = [
+            ...(p.keystrokes?.cues ?? []).map((c) => c.time),
+            ...typingClips.map((c) => c.time),
+          ];
+          const autos = deriveAutoZooms(track, currentTake.duration, zoom.autoScale, {
+            typingClips,
+            keyTimes,
+            caret: currentTake.caret,
+          });
+          autoZooms = autos.length;
+          const zooms = mergeZoomTracks(manuals, autos);
 
           const manualMoves = p.moves.filter((m) => !m.auto);
-          const autoMoves = wantAuto
-            ? deriveAutoCameraMoves(p.camera, zooms, currentTake.duration, manualMoves, track)
-            : [];
+          const autoMoves = deriveAutoCameraMoves(
+            p.camera,
+            zooms,
+            currentTake.duration,
+            manualMoves,
+            track,
+          );
           const moves = mergeMoveTracks(manualMoves, autoMoves);
 
           let sounds = p.sounds ?? [];
-          if (wantAuto) {
-            sounds = ensureClickSounds(track.clicks, sounds);
-            sounds = ensureZoomWhooshes(zooms, sounds);
-          }
+          sounds = ensureClickSounds(track.clicks, sounds);
+          sounds = ensureZoomWhooshes(zooms, sounds);
           sounds = ensureEffectShimmers(p.effects ?? [], sounds);
 
-          return { ...p, zooms, moves, sounds };
+          // Snap old heavy frames (40/30) to the readable 10% / 4% look.
+          const frame =
+            p.frame.padding >= 24 || p.frame.radius >= 16
+              ? { ...p.frame, padding: 10, radius: 4 }
+              : p.frame;
+
+          return { ...p, zoom, zooms, moves, sounds, frame };
         });
+        return { autoZooms, cursorSamples, zoomMode };
       },
       take,
       setTake,

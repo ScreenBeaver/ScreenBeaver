@@ -626,7 +626,6 @@ fn sample_mirror_input(stop: Arc<AtomicBool>, t0: Instant) -> MirrorInputTrack {
   if soft_tap_times.len() >= 3 {
     let mut i = 0;
     while i < soft_tap_times.len() {
-      let start = soft_tap_times[i];
       let mut j = i + 1;
       while j < soft_tap_times.len() && soft_tap_times[j] - soft_tap_times[j - 1] <= 0.45 {
         j += 1;
@@ -714,6 +713,9 @@ pub fn stop_session() -> Result<CaptureStopResult, String> {
     source_label: format!("Android · {}", session.label),
     cursor: track.cursor,
     typing: track.typing,
+    caret: vec![],
+    agent_driven: false,
+    finalizing: false,
   };
 
   crate::native_capture::store_last_capture(result.clone());

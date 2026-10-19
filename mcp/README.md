@@ -25,6 +25,39 @@ Cursor / Claude MCP config:
 
 Requires Screen Beaver desktop open (bridge `http://127.0.0.1:17355`).
 
+## Remote agents (BetterClaw / Streamable HTTP)
+
+Remote platforms like [BetterClaw](https://www.betterclaw.io/mcp) only speak **HTTPS Streamable HTTP** — they cannot run `npx` stdio on your PC. Keep Screen Beaver on Windows (PC awake, app open, browser logged into the product you want to demo).
+
+### In-app (Pro / Team) — preferred
+
+On **Pro** or **Team**, Screen Beaver **auto-starts** Remote MCP when you sign in (no toggle). Free plans never get this.
+
+1. Open Screen Beaver → MCP tab.
+2. **Claude.ai:** copy **Claude / cloud URL** (prefer `https://mcp.screenbeaver.com/mcp?token=…`). Add custom connector → **No sign-in** → Streamable HTTP.
+3. **BetterClaw:** URL + **Authorization** (`Bearer …`).
+4. Short ask is enough, e.g. “Sheets division and power formulas” — agent uses `make_product_tutorial` → `record_and_build` → `verify_take` (scout includes a screenshot).
+
+Auth: `Authorization: Bearer <token>` **or** `?token=<token>`.
+
+The desktop app bundles the MCP script and **auto-downloads a portable Node runtime** on first Remote MCP start (no separate Node install). Branded host needs the relay Worker deployed ([docs/MCP_RELAY.md](../docs/MCP_RELAY.md)).
+
+### Manual CLI (dev / Free workaround)
+
+```powershell
+npx -y screen-beaver-mcp --http --token your-long-random-secret
+# default: http://127.0.0.1:17356/mcp
+cloudflared tunnel --url http://127.0.0.1:17356
+```
+
+Optional: `--port 17356`.
+
+**Notes**
+- Never expose the desktop bridge `:17355` publicly — only the token-gated MCP port.
+- Quick-tunnel hostnames change every restart. For a stable URL, use a [named Cloudflare tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/).
+- The VPS only hosts the agent brain; capture/mouse/keyboard stay on your Windows machine.
+- Health check (no auth): `GET http://127.0.0.1:17356/health`
+
 ## Quick start (monorepo)
 
 ```bash
@@ -37,11 +70,11 @@ Cursor loads the server from `.cursor/mcp.json` (stdio via `npm.cmd` + `${worksp
 
 Skill: `.cursor/skills/screen-weaver-demo/SKILL.md`
 
-## Prompt example
+## Prompt example (keep it short)
 
-> Open my product in Chrome, record a short launch video without me clicking share, auto-build captions. I’ll export myself.
+> Using Screen Beaver MCP, make a short tutorial of Google Sheets division and power formulas.
 
-Use MCP tool `record_and_build`, or step through with `demo_move` / `demo_click` / `demo_type` / `demo_scroll`.
+The agent should `make_product_tutorial` → `record_and_build` (scout first, Auto zooms from the cursor track). You click Export.
 
 ## Capture tools
 

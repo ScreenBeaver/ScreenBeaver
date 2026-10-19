@@ -20,6 +20,17 @@ export default defineConfig({
     },
     dedupe: ["react", "react-dom", "@tanstack/react-router", "@tanstack/react-query"],
   },
+  // Never watch Rust build artifacts — locked DLLs throw EBUSY and kill `tauri dev`.
+  server: {
+    watch: {
+      ignored: [
+        "**/src-tauri/target/**",
+        "**/src-tauri/gen/**",
+        "**/src-tauri/resources/mcp/**",
+        "**/node_modules/**",
+      ],
+    },
+  },
   optimizeDeps: {
     exclude: ["@xenova/transformers"],
   },

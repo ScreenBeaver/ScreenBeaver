@@ -26,15 +26,17 @@ npm install --legacy-peer-deps
 npm run desktop:dev
 ```
 
-## Build release EXE (no WiX / NSIS / MSI)
-
-Installer targets are disabled on purpose. Store packaging uses the **raw EXE** inside an MSIX — not an MSI that installs again after Store install.
+## Build release EXE / NSIS installer
 
 ```bash
-npm run desktop:build
+npm run desktop:build              # release EXE only
+npm run desktop:build:installer    # NSIS setup EXE
 ```
 
-Output: `src-tauri/target/release/screen-weaver.exe`  
+`beforeBuildCommand` always rebuilds MCP and copies it to `src-tauri/resources/mcp/index.js`. The installed app’s Remote MCP (Claude / ChatGPT / BetterClaw over the relay) runs **that** file — not your repo’s `mcp/`. Rebuild the installer after MCP or capture fixes, or agents keep talking to yesterday’s bundle.
+
+Output EXE: `src-tauri/target/release/screen-weaver.exe`  
+Installer: `src-tauri/target/release/bundle/nsis/`  
 Release profile uses LTO + strip for a smaller binary.
 
 ### Frontend dist path

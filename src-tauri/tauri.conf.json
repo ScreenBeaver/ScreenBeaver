@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev -- --port 1420 --strictPort",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && node scripts/prepare-tauri-frontend.mjs",
+    "beforeBuildCommand": "npm run mcp:prepare-resource && npm run build && node scripts/prepare-tauri-frontend.mjs",
     "frontendDist": "../dist/client"
   },
   "app": {
@@ -29,6 +29,9 @@
   "bundle": {
     "active": true,
     "targets": [],
+    "resources": [
+      "resources/mcp/index.js"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

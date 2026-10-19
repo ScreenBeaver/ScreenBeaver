@@ -11,10 +11,16 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
   MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VIRTUAL_KEY, VK_BACK, VK_RETURN, VK_SHIFT,
   VK_TAB,
 };
-use windows::Win32::Graphics::Gdi::ClientToScreen;
-use windows::Win32::UI::WindowsAndMessaging::{
-  GetClientRect, GetCursorPos, GetWindowRect, SetCursorPos, SetForegroundWindow,
+use windows::Win32::Graphics::Gdi::{
+  BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+  GetDC, GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+  HGDIOBJ, SRCCOPY,
 };
+use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
+use windows::Win32::UI::WindowsAndMessaging::{
+  GetClientRect, GetCursorPos, GetWindowRect, SetCursorPos, SetForegroundWindow, PW_RENDERFULLCONTENT,
+};
+use base64::Engine;
 
 fn send_mouse(flags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS, data: i32) {
   let input = INPUT {
@@ -75,14 +81,18 @@ pub fn smooth_move_px(tx: i32, ty: i32, duration_ms: u64) -> Result<(), String> 
 
 pub fn click_left() -> Result<(), String> {
   send_mouse(MOUSEEVENTF_LEFTDOWN, 0);
-  thread::sleep(Duration::from_millis(45));
+  crate::agent_pointer_sample(true);
+  // Hold long enough for the 8ms pointer-hook poll to record down=true (Auto zooms).
+  thread::sleep(Duration::from_millis(70));
   send_mouse(MOUSEEVENTF_LEFTUP, 0);
+  crate::agent_pointer_sample(false);
   Ok(())
 }
 
 pub fn click_right() -> Result<(), String> {
   send_mouse(MOUSEEVENTF_RIGHTDOWN, 0);
-  thread::sleep(Duration::from_millis(45));
+  crate::agent_pointer_sample(false);
+  thread::sleep(Duration::from_millis(70));
   send_mouse(MOUSEEVENTF_RIGHTUP, 0);
   Ok(())
 }
@@ -200,12 +210,26 @@ fn type_one_char(ch: char) {
 
 /// Type text key-by-key (not clipboard paste) so demos look human.
 /// `on_key` fires once per character so the bridge can emit typing SFX for Unicode fallbacks.
+/// Default cadence is a slow tutorial pace (~150ms/key) with light per-key jitter.
+/// Embed `\u{8}` / backspace in `text` for human “oops → fix” moments.
 pub fn type_text(text: &str, delay_ms: u64, on_key: &mut dyn FnMut()) -> Result<(), String> {
-  let delay = Duration::from_millis(delay_ms.clamp(12, 180));
-  for ch in text.chars() {
+  let base = delay_ms.clamp(55, 320);
+  for (i, ch) in text.chars().enumerate() {
     type_one_char(ch);
     on_key();
-    thread::sleep(delay);
+    // Pause longer on spaces / punctuation / backspace (how people type in demos).
+    let pause_mult = match ch {
+      ' ' => 1.55,
+      '.' | ',' | '!' | '?' | ';' | ':' => 1.65,
+      '\n' | '\t' => 1.85,
+      '\u{8}' => 1.35,
+      '=' | '/' | '^' | '(' | ')' | '*' => 1.35,
+      _ => 1.0,
+    };
+    // Deterministic jitter so takes stay reproducible but not metronomic.
+    let jitter = 0.78 + (((ch as u64).wrapping_mul(37).wrapping_add(i as u64 * 13)) % 48) as f64 / 100.0;
+    let ms = ((base as f64) * pause_mult * jitter).round() as u64;
+    thread::sleep(Duration::from_millis(ms.clamp(55, 380)));
   }
   Ok(())
 }
@@ -256,6 +280,165 @@ pub fn content_to_window_norm(layout: &WindowLayout, cnx: f64, cny: f64) -> (f64
   let nx = (abs_x - layout.window.left as f64) / layout.window.width.max(1) as f64;
   let ny = (abs_y - layout.window.top as f64) / layout.window.height.max(1) as f64;
   (nx.clamp(0.04, 0.96), ny.clamp(0.08, 0.96))
+}
+
+fn bgra_mostly_black(bgra: &[u8], w: i32, h: i32) -> bool {
+  if w <= 0 || h <= 0 || bgra.len() < 4 {
+    return true;
+  }
+  let step = ((w * h) / 800).max(1) as usize;
+  let mut sum: u64 = 0;
+  let mut n: u64 = 0;
+  let mut i = 0usize;
+  while i + 3 < bgra.len() {
+    // BGRA
+    let b = bgra[i] as u64;
+    let g = bgra[i + 1] as u64;
+    let r = bgra[i + 2] as u64;
+    sum += (r + g + b) / 3;
+    n += 1;
+    i += step * 4;
+  }
+  n == 0 || (sum / n) < 12
+}
+
+/// Capture a window to PNG (base64), scaled so the long edge ≤ `max_edge` (default 1280).
+/// Chrome/Edge often paint black via GetDC+BitBlt — try PrintWindow, then screen blit.
+pub fn capture_window_png_base64(hwnd: isize, max_edge: u32) -> Result<String, String> {
+  let layout = window_layout(hwnd)?;
+  let w = layout.client.width.max(1);
+  let h = layout.client.height.max(1);
+  let max_edge = max_edge.clamp(320, 1920) as i32;
+  let scale = (max_edge as f64 / w.max(h) as f64).min(1.0);
+  let out_w = ((w as f64 * scale).round() as i32).max(1);
+  let out_h = ((h as f64 * scale).round() as i32).max(1);
+
+  unsafe {
+    let hwnd = HWND(hwnd as *mut _);
+    let hdc_ref = GetDC(hwnd);
+    if hdc_ref.is_invalid() {
+      return Err("GetDC failed".into());
+    }
+    let hdc_mem = CreateCompatibleDC(hdc_ref);
+    if hdc_mem.is_invalid() {
+      ReleaseDC(hwnd, hdc_ref);
+      return Err("CreateCompatibleDC failed".into());
+    }
+    let hbmp = CreateCompatibleBitmap(hdc_ref, w, h);
+    if hbmp.is_invalid() {
+      let _ = DeleteDC(hdc_mem);
+      ReleaseDC(hwnd, hdc_ref);
+      return Err("CreateCompatibleBitmap failed".into());
+    }
+    let old = SelectObject(hdc_mem, HGDIOBJ(hbmp.0));
+
+    // 1) PrintWindow — works for many Chromium / GPU-composited windows.
+    let printed = PrintWindow(hwnd, hdc_mem, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT)).as_bool();
+    let mut need_fallback = !printed;
+
+    let mut bmi = BITMAPINFO {
+      bmiHeader: BITMAPINFOHEADER {
+        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: w,
+        biHeight: -h, // top-down
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: BI_RGB.0,
+        biSizeImage: 0,
+        biXPelsPerMeter: 0,
+        biYPelsPerMeter: 0,
+        biClrUsed: 0,
+        biClrImportant: 0,
+      },
+      bmiColors: [Default::default()],
+    };
+    let mut bgra = vec![0u8; (w * h * 4) as usize];
+    let mut got = GetDIBits(
+      hdc_mem,
+      hbmp,
+      0,
+      h as u32,
+      Some(bgra.as_mut_ptr() as *mut _),
+      &mut bmi,
+      DIB_RGB_COLORS,
+    );
+    if got == 0 || bgra_mostly_black(&bgra, w, h) {
+      need_fallback = true;
+    }
+
+    // 2) Classic client BitBlt (sometimes works when PrintWindow is empty).
+    if need_fallback {
+      let ok = BitBlt(hdc_mem, 0, 0, w, h, hdc_ref, 0, 0, SRCCOPY).is_ok();
+      if ok {
+        got = GetDIBits(
+          hdc_mem,
+          hbmp,
+          0,
+          h as u32,
+          Some(bgra.as_mut_ptr() as *mut _),
+          &mut bmi,
+          DIB_RGB_COLORS,
+        );
+        need_fallback = got == 0 || bgra_mostly_black(&bgra, w, h);
+      }
+    }
+
+    // 3) Screen DC crop of the client rect — last resort for black Chromium frames.
+    if need_fallback {
+      let screen = GetDC(None);
+      if !screen.is_invalid() {
+        let ox = layout.client.left;
+        let oy = layout.client.top;
+        let _ = BitBlt(hdc_mem, 0, 0, w, h, screen, ox, oy, SRCCOPY);
+        ReleaseDC(None, screen);
+        got = GetDIBits(
+          hdc_mem,
+          hbmp,
+          0,
+          h as u32,
+          Some(bgra.as_mut_ptr() as *mut _),
+          &mut bmi,
+          DIB_RGB_COLORS,
+        );
+      }
+    }
+
+    let _ = SelectObject(hdc_mem, old);
+    let _ = DeleteObject(HGDIOBJ(hbmp.0));
+    let _ = DeleteDC(hdc_mem);
+    ReleaseDC(hwnd, hdc_ref);
+    if got == 0 {
+      return Err("GetDIBits failed".into());
+    }
+
+    // BGRA → RGB (+ optional downscale)
+    let mut rgb = vec![0u8; (out_w * out_h * 3) as usize];
+    for y in 0..out_h {
+      for x in 0..out_w {
+        let sx = ((x as f64 / out_w as f64) * w as f64).floor() as i32;
+        let sy = ((y as f64 / out_h as f64) * h as f64).floor() as i32;
+        let si = ((sy * w + sx) * 4) as usize;
+        let di = ((y * out_w + x) * 3) as usize;
+        rgb[di] = bgra[si + 2];
+        rgb[di + 1] = bgra[si + 1];
+        rgb[di + 2] = bgra[si];
+      }
+    }
+
+    let mut png_bytes: Vec<u8> = Vec::new();
+    {
+      let mut encoder = png::Encoder::new(&mut png_bytes, out_w as u32, out_h as u32);
+      encoder.set_color(png::ColorType::Rgb);
+      encoder.set_depth(png::BitDepth::Eight);
+      let mut writer = encoder
+        .write_header()
+        .map_err(|e| format!("png header: {e}"))?;
+      writer
+        .write_image_data(&rgb)
+        .map_err(|e| format!("png data: {e}"))?;
+    }
+    Ok(base64::engine::general_purpose::STANDARD.encode(&png_bytes))
+  }
 }
 
 pub fn window_layout(hwnd: isize) -> Result<WindowLayout, String> {
@@ -384,7 +567,12 @@ where
           .or_else(|| step.get("ny"))
           .and_then(|v| v.as_f64())
           .unwrap_or(0.5);
-        let duration_ms = step.get("durationMs").and_then(|v| v.as_u64()).unwrap_or(550);
+        // Always animate the real OS cursor — never teleport (min ~400ms).
+        let duration_ms = step
+          .get("durationMs")
+          .and_then(|v| v.as_u64())
+          .unwrap_or(550)
+          .max(400);
         let do_click = op == "click"
           || step.get("click").and_then(|v| v.as_bool()).unwrap_or(false);
         let in_window = step.get("inWindow").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -403,6 +591,57 @@ where
             click_left()?;
           }
         }
+      }
+      "drag" => {
+        // Real cursor drag: move → mouse down → move → mouse up (SendInput).
+        let content_space = step.get("contentNx").and_then(|v| v.as_f64()).is_some()
+          || step.get("toContentNx").and_then(|v| v.as_f64()).is_some()
+          || step.get("space").and_then(|v| v.as_str()) == Some("content");
+        let nx0 = step
+          .get("contentNx")
+          .or_else(|| step.get("nx"))
+          .and_then(|v| v.as_f64())
+          .unwrap_or(0.5);
+        let ny0 = step
+          .get("contentNy")
+          .or_else(|| step.get("ny"))
+          .and_then(|v| v.as_f64())
+          .unwrap_or(0.5);
+        let nx1 = step
+          .get("toContentNx")
+          .or_else(|| step.get("toNx"))
+          .and_then(|v| v.as_f64())
+          .unwrap_or(nx0);
+        let ny1 = step
+          .get("toContentNy")
+          .or_else(|| step.get("toNy"))
+          .and_then(|v| v.as_f64())
+          .unwrap_or(ny0);
+        let approach_ms = step
+          .get("durationMs")
+          .and_then(|v| v.as_u64())
+          .unwrap_or(550)
+          .max(400);
+        let drag_ms = step
+          .get("dragMs")
+          .and_then(|v| v.as_u64())
+          .unwrap_or(700)
+          .max(300);
+        let hwnd = step
+          .get("hwnd")
+          .and_then(|v| v.as_i64())
+          .map(|v| v as isize)
+          .or(default_hwnd)
+          .ok_or_else(|| "No window hwnd for drag".to_string())?;
+        move_in_window_mapped(hwnd, nx0, ny0, approach_ms, false, content_space)?;
+        thread::sleep(Duration::from_millis(80));
+        send_mouse(MOUSEEVENTF_LEFTDOWN, 0);
+        crate::agent_pointer_sample(true);
+        thread::sleep(Duration::from_millis(60));
+        move_in_window_mapped(hwnd, nx1, ny1, drag_ms, false, content_space)?;
+        thread::sleep(Duration::from_millis(50));
+        send_mouse(MOUSEEVENTF_LEFTUP, 0);
+        crate::agent_pointer_sample(false);
       }
       "scroll" => {
         let delta = step.get("delta").and_then(|v| v.as_i64()).unwrap_or(-2) as i32;
@@ -424,12 +663,22 @@ where
         if text.chars().count() > 500 {
           return Err("type text too long (max 500 chars)".to_string());
         }
-        let delay_ms = step.get("delayMs").and_then(|v| v.as_u64()).unwrap_or(45);
+        let delay_ms = step.get("delayMs").and_then(|v| v.as_u64()).unwrap_or(150);
         if let Some(hwnd) = default_hwnd {
           focus_hwnd(hwnd)?;
-          thread::sleep(Duration::from_millis(80));
+          thread::sleep(Duration::from_millis(120));
         }
         type_text(text, delay_ms, &mut on_type_key)?;
+      }
+      "backspace" | "bs" => {
+        let count = step.get("count").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 40);
+        let delay_ms = step.get("delayMs").and_then(|v| v.as_u64()).unwrap_or(130);
+        if let Some(hwnd) = default_hwnd {
+          focus_hwnd(hwnd)?;
+          thread::sleep(Duration::from_millis(60));
+        }
+        let text: String = std::iter::repeat('\u{8}').take(count as usize).collect();
+        type_text(&text, delay_ms, &mut on_type_key)?;
       }
       other => return Err(format!("Unknown demo op: {other}")),
     }

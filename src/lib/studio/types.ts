@@ -37,8 +37,8 @@ export type ChromeTheme = "dark" | "light";
 
 export interface FrameSettings {
   ratio: AspectRatio;
-  padding: number; // 0..100 -> percentage of the shorter stage edge
-  radius: number; // 0..100 percent of half the shorter frame edge
+  padding: number; // 0..100 → % inset of the shorter stage edge (10 ≈ 10%)
+  radius: number; // 0..100 → % corner round of the shorter framed edge (4 ≈ 4%)
   shadow: number; // 0..100
   crop: { x: number; y: number; w: number; h: number }; // normalized source crop
   /** Title-bar style above the recording (or none). */
@@ -257,6 +257,14 @@ export interface ZoomKeyframe {
    * so the frame tracks growing text even when the mouse stays still.
    */
   caretProgress?: number;
+  /** Text-caret positions (absolute seconds) — typing zooms pan along these. */
+  caretPath?: CaretSample[];
+}
+
+export interface CaretSample {
+  t: number;
+  x: number;
+  y: number;
 }
 
 export type CameraMoveKind = "arc-lr" | "arc-rl" | "orbit" | "dip";
@@ -316,6 +324,8 @@ export interface RecordingTake {
   width: number;
   height: number;
   cursor: CursorSample[];
+  /** Text-caret positions while typing (same space as cursor). */
+  caret?: CaretSample[];
   /** Custom cursor bitmaps keyed by iconId. */
   cursorIcons?: Record<string, CursorIconBitmap>;
   createdAt: number;

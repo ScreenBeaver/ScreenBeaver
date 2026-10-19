@@ -1,9 +1,9 @@
 {
   "name": "screen-beaver-mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
-  "description": "MCP server so Cursor / Claude Desktop can drive Screen Beaver video recipes & export",
+  "description": "MCP server so Cursor / Claude Desktop / remote agents (Streamable HTTP) can drive Screen Beaver video recipes & export",
   "bin": {
     "screen-beaver-mcp": "./dist/index.js"
   },

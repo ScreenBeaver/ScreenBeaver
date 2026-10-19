@@ -91,11 +91,13 @@ export const STYLE_PRESETS: Record<
     chromeTheme: "dark" | "light";
   }
 > = {
-  clean: { label: "Clean Demo", wallpaperId: "arctic", padding: 26, radius: 22, chromeTheme: "light" },
-  day: { label: "Day Product", wallpaperId: "aesthetic-laptop", padding: 36, radius: 26, chromeTheme: "light" },
-  vivid: { label: "Vivid Launch", wallpaperId: "aesthetic-pointer", padding: 40, radius: 30, chromeTheme: "dark" },
-  night: { label: "Night Product", wallpaperId: "aesthetic-portal", padding: 32, radius: 18, chromeTheme: "dark" },
-  tight: { label: "Tight Tutorial", wallpaperId: "slate", padding: 12, radius: 10, chromeTheme: "dark" },
+  // Padding / radius are % of the shorter stage edge (see FrameSettings).
+  // ~10% pad + ~4% radius keeps the capture readable without a tiny letterbox.
+  clean: { label: "Clean Demo", wallpaperId: "arctic", padding: 10, radius: 4, chromeTheme: "light" },
+  day: { label: "Day Product", wallpaperId: "aesthetic-laptop", padding: 10, radius: 4, chromeTheme: "light" },
+  vivid: { label: "Vivid Launch", wallpaperId: "aesthetic-pointer", padding: 10, radius: 4, chromeTheme: "dark" },
+  night: { label: "Night Product", wallpaperId: "aesthetic-portal", padding: 10, radius: 4, chromeTheme: "dark" },
+  tight: { label: "Tight Tutorial", wallpaperId: "slate", padding: 8, radius: 3, chromeTheme: "dark" },
 };
 
 function uid(prefix: string) {
@@ -178,7 +180,13 @@ export function applyRecipe(project: ProjectState, recipe: ScreenWeaverRecipe): 
   if (recipe.regenerateAutoZooms) {
     next = {
       ...next,
-      zoom: { ...next.zoom, enabled: true, mode: "auto" },
+      zoom: {
+        ...next.zoom,
+        enabled: true,
+        mode: "auto",
+        // Stronger punches for product tutorials (Screen Studio–like readability).
+        autoScale: Math.max(next.zoom.autoScale ?? 1.85, 2.35),
+      },
       // Drop prior auto punches; manuals from this recipe (if any) stay below.
       zooms: next.zooms.filter((z) => !z.auto),
     };
