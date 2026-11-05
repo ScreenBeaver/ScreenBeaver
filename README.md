@@ -1,12 +1,15 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="Screen Beaver logo" width="128" />
+  <img src="docs/assets/logo.png" alt="Screen Beaver logo" width="96" />
 </p>
 
 <h1 align="center">Screen Beaver</h1>
 
 <p align="center">
-  <strong>Open-source desktop screen recorder &amp; motion editor for product videos.</strong><br/>
-  Record any window or screen · polish with zooms, captions &amp; effects · export a crisp MP4 — locally.
+  <strong>Screen recorder for product demos that auto-polishes zooms, captions, and export — locally on Windows.</strong>
+</p>
+
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="Screen Beaver demo — record, zoom, caption, export" width="100%" />
 </p>
 
 <p align="center">
@@ -15,15 +18,25 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#mcp--ai-agents">MCP</a> ·
   <a href="#documentation">Docs</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="#license">License</a>
 </p>
 
 <p align="center">
+  <a href="https://github.com/ScreenBeaver/ScreenBeaver/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ScreenBeaver/ScreenBeaver/actions/workflows/ci.yml/badge.svg" /></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-0a0c10?style=flat-square" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square" />
   <img alt="Stack" src="https://img.shields.io/badge/stack-Tauri%20%2B%20React-9ef0d2?style=flat-square&labelColor=0a0c10" />
   <img alt="MCP" src="https://img.shields.io/badge/MCP-agent%20ready-7c5cff?style=flat-square" />
 </p>
+
+### Install (one step)
+
+```text
+Microsoft Store → search “Screen Beaver” → Get
+```
+
+Or open the Store listing directly: **[apps.microsoft.com/detail/9P89CCNBVMVV](https://apps.microsoft.com/detail/9P89CCNBVMVV)**
 
 <p align="center">
   <a href="https://apps.microsoft.com/detail/9P89CCNBVMVV">
@@ -35,10 +48,7 @@
   </a>
 </p>
 
-<p align="center">
-  <strong><a href="https://apps.microsoft.com/detail/9P89CCNBVMVV">Download for Windows</a></strong>
-  from the Microsoft Store · or build from source below
-</p>
+**Try without installing from source:** [screenbeaver.com](https://screenbeaver.com) · [Microsoft Store](https://apps.microsoft.com/detail/9P89CCNBVMVV) · short demo above.
 
 ---
 
@@ -285,10 +295,12 @@ Details: [`packaging/msix/README.md`](./packaging/msix/README.md) · replace pla
 
 ## Contributing
 
-1. Fork & clone the repo  
-2. `npm install` · `npm run desktop:dev`  
-3. Keep PRs focused; don’t commit `.env`, `node_modules`, `src-tauri/target`, or MSIX payloads  
-4. Prefer clear commit messages (what changed and why)
+See **[CONTRIBUTING.md](./CONTRIBUTING.md)** — local setup, PR rules, and our **one-business-day reply** goal.
+
+Good first issues: [`good first issue`](https://github.com/ScreenBeaver/ScreenBeaver/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).  
+Questions: [Discussions](https://github.com/ScreenBeaver/ScreenBeaver/discussions).
+
+Changelog: [CHANGELOG.md](./CHANGELOG.md) · Show HN draft: [docs/SHOW_HN.md](./docs/SHOW_HN.md)
 
 ---
 

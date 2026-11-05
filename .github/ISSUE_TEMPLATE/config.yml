@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions & ideas
+    url: https://github.com/ScreenBeaver/ScreenBeaver/discussions
+    about: Ask questions and share ideas in Discussions (bugs stay in Issues).
